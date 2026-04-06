@@ -391,6 +391,25 @@ export class SourceOperationsService {
     );
   }
 
+  async hasActiveSyncJob(source: SourceAdapterKey): Promise<boolean> {
+    const sourceRecord = await this.sourceRecordService.resolveByKey(source);
+    const activeJob = await this.prismaService.jobRun.findFirst({
+      where: {
+        sourceId: sourceRecord.id,
+        jobType: JobType.SYNC,
+        status: {
+          in: [JobRunStatus.QUEUED, JobRunStatus.RUNNING],
+        },
+        finishedAt: null,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    return Boolean(activeJob);
+  }
+
   private mapHealthStatus(status: HealthStatus): SourceHealthModel['status'] {
     switch (status) {
       case HealthStatus.OK:

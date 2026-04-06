@@ -9,6 +9,7 @@ import type {
   SourceSyncDispatchFailureDto,
 } from '../dto/source-sync-accepted.dto';
 import { SourceAdapterRegistry } from '../infrastructure/registry/source-adapter.registry';
+import type { SourceSyncTrigger } from '../domain/source-adapter.types';
 
 @Injectable()
 export class SourceSyncDispatchService {
@@ -22,16 +23,33 @@ export class SourceSyncDispatchService {
   async dispatchManualSync(
     source: SourceAdapterKey,
   ): Promise<SourceSyncAcceptedDto> {
+    return this.dispatchSync(source, 'manual');
+  }
+
+  async dispatchScheduledSync(
+    source: SourceAdapterKey,
+  ): Promise<SourceSyncAcceptedDto> {
+    return this.dispatchSync(source, 'scheduled');
+  }
+
+  async dispatchManualSyncAll(): Promise<SourceSyncBatchAcceptedDto> {
+    return this.dispatchSyncAll('manual');
+  }
+
+  private async dispatchSync(
+    source: SourceAdapterKey,
+    trigger: SourceSyncTrigger,
+  ): Promise<SourceSyncAcceptedDto> {
     const requestedAt = new Date();
     const adapter = this.sourceAdapterRegistry.getOrThrow(source);
     const mode = this.selectDispatchMode(adapter);
     const result = await adapter.sync({
-      trigger: 'manual',
+      trigger,
       mode,
       requestedAt,
     });
     this.logger.log(
-      `Accepted manual sync for ${source} with ${result.acceptedJobs.length} queued job(s).`,
+      `Accepted ${trigger} sync for ${source} with ${result.acceptedJobs.length} queued job(s).`,
       SourceSyncDispatchService.name,
     );
 
@@ -45,7 +63,9 @@ export class SourceSyncDispatchService {
     };
   }
 
-  async dispatchManualSyncAll(): Promise<SourceSyncBatchAcceptedDto> {
+  private async dispatchSyncAll(
+    trigger: SourceSyncTrigger,
+  ): Promise<SourceSyncBatchAcceptedDto> {
     const requestedAt = new Date();
     const results: SourceSyncAcceptedDto[] = [];
     const failures: SourceSyncDispatchFailureDto[] = [];
@@ -56,12 +76,12 @@ export class SourceSyncDispatchService {
       try {
         const mode = this.selectDispatchMode(adapter);
         const result = await adapter.sync({
-          trigger: 'manual',
+          trigger,
           mode,
           requestedAt,
         });
         this.logger.log(
-          `Accepted manual sync for ${adapter.descriptor.key} with ${result.acceptedJobs.length} queued job(s).`,
+          `Accepted ${trigger} sync for ${adapter.descriptor.key} with ${result.acceptedJobs.length} queued job(s).`,
           SourceSyncDispatchService.name,
         );
 

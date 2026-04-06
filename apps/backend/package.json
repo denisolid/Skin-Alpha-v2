@@ -21,6 +21,7 @@
     "@nestjs/config": "^4.0.3",
     "@nestjs/core": "^11.1.18",
     "@nestjs/platform-express": "^11.1.18",
+    "@nestjs/schedule": "^6.1.1",
     "@prisma/client": "^6.19.3",
     "bullmq": "^5.73.0",
     "class-transformer": "^0.5.1",

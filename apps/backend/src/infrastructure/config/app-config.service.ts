@@ -726,6 +726,164 @@ export class AppConfigService {
       .filter((value) => value.length > 0);
   }
 
+  get schedulerEnabled(): boolean {
+    return this.configService.getOrThrow('SCHEDULER_ENABLED', {
+      infer: true,
+    });
+  }
+
+  get schedulerFailureCooldownMinutes(): number {
+    return this.configService.getOrThrow('SCHEDULER_FAILURE_COOLDOWN_MINUTES', {
+      infer: true,
+    });
+  }
+
+  get schedulerFailureCooldownMs(): number {
+    return this.schedulerFailureCooldownMinutes * 60 * 1000;
+  }
+
+  get schedulerDegradedIntervalMultiplier(): number {
+    return this.configService.getOrThrow(
+      'SCHEDULER_DEGRADED_INTERVAL_MULTIPLIER',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get schedulerDownIntervalMultiplier(): number {
+    return this.configService.getOrThrow('SCHEDULER_DOWN_INTERVAL_MULTIPLIER', {
+      infer: true,
+    });
+  }
+
+  get schedulerCsFloatMinIntervalMinutes(): number {
+    return this.configService.getOrThrow(
+      'SCHEDULER_CSFLOAT_MIN_INTERVAL_MINUTES',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get schedulerCsFloatMinIntervalMs(): number {
+    return this.schedulerCsFloatMinIntervalMinutes * 60 * 1000;
+  }
+
+  get schedulerSteamSnapshotMinIntervalMinutes(): number {
+    return this.configService.getOrThrow(
+      'SCHEDULER_STEAM_SNAPSHOT_MIN_INTERVAL_MINUTES',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get schedulerSteamSnapshotMinIntervalMs(): number {
+    return this.schedulerSteamSnapshotMinIntervalMinutes * 60 * 1000;
+  }
+
+  get schedulerSkinportMinIntervalMinutes(): number {
+    return this.configService.getOrThrow(
+      'SCHEDULER_SKINPORT_MIN_INTERVAL_MINUTES',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get schedulerSkinportMinIntervalMs(): number {
+    return this.schedulerSkinportMinIntervalMinutes * 60 * 1000;
+  }
+
+  get schedulerBitSkinsMinIntervalMinutes(): number {
+    return this.configService.getOrThrow(
+      'SCHEDULER_BITSKINS_MIN_INTERVAL_MINUTES',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get schedulerBitSkinsMinIntervalMs(): number {
+    return this.schedulerBitSkinsMinIntervalMinutes * 60 * 1000;
+  }
+
+  get schedulerBackupSourceMinIntervalMinutes(): number {
+    return this.configService.getOrThrow(
+      'SCHEDULER_BACKUP_SOURCE_MIN_INTERVAL_MINUTES',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get schedulerBackupSourceMinIntervalMs(): number {
+    return this.schedulerBackupSourceMinIntervalMinutes * 60 * 1000;
+  }
+
+  get schedulerMarketStateRebuildEnabled(): boolean {
+    return this.configService.getOrThrow(
+      'SCHEDULER_MARKET_STATE_REBUILD_ENABLED',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get schedulerMarketStateRebuildMinIntervalMinutes(): number {
+    return this.configService.getOrThrow(
+      'SCHEDULER_MARKET_STATE_REBUILD_MIN_INTERVAL_MINUTES',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get schedulerMarketStateRebuildMinIntervalMs(): number {
+    return this.schedulerMarketStateRebuildMinIntervalMinutes * 60 * 1000;
+  }
+
+  get schedulerOpportunityRescanEnabled(): boolean {
+    return this.configService.getOrThrow(
+      'SCHEDULER_OPPORTUNITY_RESCAN_ENABLED',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get schedulerOpportunityRescanMinIntervalMinutes(): number {
+    return this.configService.getOrThrow(
+      'SCHEDULER_OPPORTUNITY_RESCAN_MIN_INTERVAL_MINUTES',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get schedulerOpportunityRescanMinIntervalMs(): number {
+    return this.schedulerOpportunityRescanMinIntervalMinutes * 60 * 1000;
+  }
+
+  get schedulerOpportunityRescanMinChangedStates(): number {
+    return this.configService.getOrThrow(
+      'SCHEDULER_OPPORTUNITY_RESCAN_MIN_CHANGED_STATES',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get schedulerOpportunityRescanMinHotUpdates(): number {
+    return this.configService.getOrThrow(
+      'SCHEDULER_OPPORTUNITY_RESCAN_MIN_HOT_UPDATES',
+      {
+        infer: true,
+      },
+    );
+  }
+
   isGoogleAuthConfigured(): boolean {
     return Boolean(
       this.googleClientId && this.googleClientSecret && this.googleRedirectUri,
