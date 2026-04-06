@@ -1,0 +1,2 @@
+export const SOURCE_ADAPTERS = Symbol('SOURCE_ADAPTERS');
+export const SOURCE_SCHEDULER = Symbol('SOURCE_SCHEDULER');

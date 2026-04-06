@@ -1,0 +1,782 @@
+import { Inject, Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import type { RedisOptions } from 'ioredis';
+
+import type { EnvironmentVariables, NodeEnvironment } from './env.validation';
+
+@Injectable()
+export class AppConfigService {
+  constructor(
+    @Inject(ConfigService)
+    private readonly configService: ConfigService<EnvironmentVariables, true>,
+  ) {}
+
+  get nodeEnv(): NodeEnvironment {
+    return this.configService.getOrThrow('NODE_ENV', {
+      infer: true,
+    });
+  }
+
+  get appName(): string {
+    return this.configService.getOrThrow('APP_NAME', {
+      infer: true,
+    });
+  }
+
+  get port(): number {
+    return this.configService.getOrThrow('PORT', {
+      infer: true,
+    });
+  }
+
+  get frontendUrl(): string {
+    return this.configService.getOrThrow('FRONTEND_URL', {
+      infer: true,
+    });
+  }
+
+  get databaseUrl(): string {
+    return this.configService.getOrThrow('DATABASE_URL', {
+      infer: true,
+    });
+  }
+
+  get queuePrefix(): string {
+    return this.configService.getOrThrow('QUEUE_PREFIX', {
+      infer: true,
+    });
+  }
+
+  get redisHost(): string {
+    return this.configService.getOrThrow('REDIS_HOST', {
+      infer: true,
+    });
+  }
+
+  get redisPort(): number {
+    return this.configService.getOrThrow('REDIS_PORT', {
+      infer: true,
+    });
+  }
+
+  get redisUsername(): string | undefined {
+    return this.configService.get('REDIS_USERNAME', {
+      infer: true,
+    });
+  }
+
+  get redisPassword(): string | undefined {
+    return this.configService.get('REDIS_PASSWORD', {
+      infer: true,
+    });
+  }
+
+  get redisConnectionOptions(): RedisOptions {
+    return {
+      host: this.redisHost,
+      port: this.redisPort,
+      ...(this.redisUsername ? { username: this.redisUsername } : {}),
+      ...(this.redisPassword ? { password: this.redisPassword } : {}),
+    };
+  }
+
+  get sessionCookieName(): string {
+    return this.configService.getOrThrow('SESSION_COOKIE_NAME', {
+      infer: true,
+    });
+  }
+
+  get sessionTtlDays(): number {
+    return this.configService.getOrThrow('SESSION_TTL_DAYS', {
+      infer: true,
+    });
+  }
+
+  get sessionTtlMs(): number {
+    return this.sessionTtlDays * 24 * 60 * 60 * 1000;
+  }
+
+  get sessionSecureCookie(): boolean {
+    return this.configService.getOrThrow('SESSION_SECURE_COOKIE', {
+      infer: true,
+    });
+  }
+
+  get authStateTtlSeconds(): number {
+    return this.configService.getOrThrow('AUTH_STATE_TTL_SECONDS', {
+      infer: true,
+    });
+  }
+
+  get authExternalRedirectUrl(): string {
+    return this.configService.getOrThrow('AUTH_EXTERNAL_REDIRECT_URL', {
+      infer: true,
+    });
+  }
+
+  get googleClientId(): string | undefined {
+    return this.configService.get('GOOGLE_CLIENT_ID', {
+      infer: true,
+    });
+  }
+
+  get googleClientSecret(): string | undefined {
+    return this.configService.get('GOOGLE_CLIENT_SECRET', {
+      infer: true,
+    });
+  }
+
+  get googleRedirectUri(): string | undefined {
+    return this.configService.get('GOOGLE_REDIRECT_URI', {
+      infer: true,
+    });
+  }
+
+  get googleDiscoveryUrl(): string {
+    return this.configService.getOrThrow('GOOGLE_OIDC_DISCOVERY_URL', {
+      infer: true,
+    });
+  }
+
+  get steamApiKey(): string | undefined {
+    return this.configService.get('STEAM_API_KEY', {
+      infer: true,
+    });
+  }
+
+  get steamOpenIdRealm(): string | undefined {
+    return this.configService.get('STEAM_OPENID_REALM', {
+      infer: true,
+    });
+  }
+
+  get steamOpenIdReturnUrl(): string | undefined {
+    return this.configService.get('STEAM_OPENID_RETURN_URL', {
+      infer: true,
+    });
+  }
+
+  get steamOpenIdEndpoint(): string {
+    return this.configService.getOrThrow('STEAM_OPENID_ENDPOINT', {
+      infer: true,
+    });
+  }
+
+  get skinportApiBaseUrl(): string {
+    return this.configService.getOrThrow('SKINPORT_API_BASE_URL', {
+      infer: true,
+    });
+  }
+
+  get skinportWebsocketUrl(): string {
+    return this.configService.getOrThrow('SKINPORT_WEBSOCKET_URL', {
+      infer: true,
+    });
+  }
+
+  get skinportCurrency(): string {
+    return this.configService.getOrThrow('SKINPORT_CURRENCY', {
+      infer: true,
+    });
+  }
+
+  get skinportAppId(): number {
+    return this.configService.getOrThrow('SKINPORT_APP_ID', {
+      infer: true,
+    });
+  }
+
+  get skinportTradableOnly(): boolean {
+    return this.configService.getOrThrow('SKINPORT_TRADABLE_ONLY', {
+      infer: true,
+    });
+  }
+
+  get skinportItemsSyncEnabled(): boolean {
+    return this.configService.getOrThrow('SKINPORT_ITEMS_SYNC_ENABLED', {
+      infer: true,
+    });
+  }
+
+  get skinportSalesHistorySyncEnabled(): boolean {
+    return this.configService.getOrThrow(
+      'SKINPORT_SALES_HISTORY_SYNC_ENABLED',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get skinportWebsocketEnabled(): boolean {
+    return this.configService.getOrThrow('SKINPORT_WEBSOCKET_ENABLED', {
+      infer: true,
+    });
+  }
+
+  get skinportWebsocketLocale(): string {
+    return this.configService.getOrThrow('SKINPORT_WEBSOCKET_LOCALE', {
+      infer: true,
+    });
+  }
+
+  get skinportCacheTtlSeconds(): number {
+    return this.configService.getOrThrow('SKINPORT_CACHE_TTL_SECONDS', {
+      infer: true,
+    });
+  }
+
+  get skinportCacheTtlMs(): number {
+    return this.skinportCacheTtlSeconds * 1000;
+  }
+
+  get skinportRateLimitWindowSeconds(): number {
+    return this.configService.getOrThrow('SKINPORT_RATE_LIMIT_WINDOW_SECONDS', {
+      infer: true,
+    });
+  }
+
+  get skinportRateLimitMaxRequests(): number {
+    return this.configService.getOrThrow('SKINPORT_RATE_LIMIT_MAX_REQUESTS', {
+      infer: true,
+    });
+  }
+
+  get skinportClientId(): string | undefined {
+    return this.configService.get('SKINPORT_CLIENT_ID', {
+      infer: true,
+    });
+  }
+
+  get skinportClientSecret(): string | undefined {
+    return this.configService.get('SKINPORT_CLIENT_SECRET', {
+      infer: true,
+    });
+  }
+
+  get csfloatApiBaseUrl(): string {
+    return this.configService.getOrThrow('CSFLOAT_API_BASE_URL', {
+      infer: true,
+    });
+  }
+
+  get csfloatApiKey(): string | undefined {
+    return this.configService.get('CSFLOAT_API_KEY', {
+      infer: true,
+    });
+  }
+
+  get csfloatCurrency(): string {
+    return this.configService.getOrThrow('CSFLOAT_CURRENCY', {
+      infer: true,
+    });
+  }
+
+  get csfloatFullSyncEnabled(): boolean {
+    return this.configService.getOrThrow('CSFLOAT_FULL_SYNC_ENABLED', {
+      infer: true,
+    });
+  }
+
+  get csfloatHotUniverseSyncEnabled(): boolean {
+    return this.configService.getOrThrow('CSFLOAT_HOT_UNIVERSE_SYNC_ENABLED', {
+      infer: true,
+    });
+  }
+
+  get csfloatListingsPageLimit(): number {
+    return this.configService.getOrThrow('CSFLOAT_LISTINGS_PAGE_LIMIT', {
+      infer: true,
+    });
+  }
+
+  get csfloatListingsPageBudget(): number {
+    return this.configService.getOrThrow('CSFLOAT_LISTINGS_PAGE_BUDGET', {
+      infer: true,
+    });
+  }
+
+  get csfloatDetailJobBudget(): number {
+    return this.configService.getOrThrow('CSFLOAT_DETAIL_JOB_BUDGET', {
+      infer: true,
+    });
+  }
+
+  get csfloatListingsRateLimitWindowSeconds(): number {
+    return this.configService.getOrThrow(
+      'CSFLOAT_LISTINGS_RATE_LIMIT_WINDOW_SECONDS',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get csfloatListingsRateLimitMaxRequests(): number {
+    return this.configService.getOrThrow(
+      'CSFLOAT_LISTINGS_RATE_LIMIT_MAX_REQUESTS',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get csfloatDetailRateLimitWindowSeconds(): number {
+    return this.configService.getOrThrow(
+      'CSFLOAT_DETAIL_RATE_LIMIT_WINDOW_SECONDS',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get csfloatDetailRateLimitMaxRequests(): number {
+    return this.configService.getOrThrow(
+      'CSFLOAT_DETAIL_RATE_LIMIT_MAX_REQUESTS',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get enableYouPin(): boolean {
+    return this.configService.getOrThrow('ENABLE_YOUPIN', {
+      infer: true,
+    });
+  }
+
+  get youpinReferenceOnly(): boolean {
+    return this.configService.getOrThrow('YOUPIN_REFERENCE_ONLY', {
+      infer: true,
+    });
+  }
+
+  get youpinApiBaseUrl(): string {
+    return this.configService.getOrThrow('YOUPIN_API_BASE_URL', {
+      infer: true,
+    });
+  }
+
+  get youpinApiKey(): string | undefined {
+    return this.configService.get('YOUPIN_API_KEY', {
+      infer: true,
+    });
+  }
+
+  get youpinCurrency(): string {
+    return this.configService.getOrThrow('YOUPIN_CURRENCY', {
+      infer: true,
+    });
+  }
+
+  get youpinPageLimit(): number {
+    return this.configService.getOrThrow('YOUPIN_PAGE_LIMIT', {
+      infer: true,
+    });
+  }
+
+  get youpinBatchSize(): number {
+    return this.configService.getOrThrow('YOUPIN_BATCH_SIZE', {
+      infer: true,
+    });
+  }
+
+  get youpinBatchBudget(): number {
+    return this.configService.getOrThrow('YOUPIN_BATCH_BUDGET', {
+      infer: true,
+    });
+  }
+
+  get youpinRateLimitWindowSeconds(): number {
+    return this.configService.getOrThrow('YOUPIN_RATE_LIMIT_WINDOW_SECONDS', {
+      infer: true,
+    });
+  }
+
+  get youpinRateLimitMaxRequests(): number {
+    return this.configService.getOrThrow('YOUPIN_RATE_LIMIT_MAX_REQUESTS', {
+      infer: true,
+    });
+  }
+
+  get enableBitSkins(): boolean {
+    return this.configService.getOrThrow('ENABLE_BITSKINS', {
+      infer: true,
+    });
+  }
+
+  get bitskinsApiBaseUrl(): string {
+    return this.configService.getOrThrow('BITSKINS_API_BASE_URL', {
+      infer: true,
+    });
+  }
+
+  get bitskinsApiKey(): string | undefined {
+    return this.configService.get('BITSKINS_API_KEY', {
+      infer: true,
+    });
+  }
+
+  get bitskinsCurrency(): string {
+    return this.configService.getOrThrow('BITSKINS_CURRENCY', {
+      infer: true,
+    });
+  }
+
+  get bitskinsPageLimit(): number {
+    return this.configService.getOrThrow('BITSKINS_PAGE_LIMIT', {
+      infer: true,
+    });
+  }
+
+  get bitskinsBatchSize(): number {
+    return this.configService.getOrThrow('BITSKINS_BATCH_SIZE', {
+      infer: true,
+    });
+  }
+
+  get bitskinsBatchBudget(): number {
+    return this.configService.getOrThrow('BITSKINS_BATCH_BUDGET', {
+      infer: true,
+    });
+  }
+
+  get bitskinsRateLimitWindowSeconds(): number {
+    return this.configService.getOrThrow('BITSKINS_RATE_LIMIT_WINDOW_SECONDS', {
+      infer: true,
+    });
+  }
+
+  get bitskinsRateLimitMaxRequests(): number {
+    return this.configService.getOrThrow('BITSKINS_RATE_LIMIT_MAX_REQUESTS', {
+      infer: true,
+    });
+  }
+
+  get enableC5Game(): boolean {
+    return this.configService.getOrThrow('ENABLE_C5GAME', {
+      infer: true,
+    });
+  }
+
+  get c5gameApiBaseUrl(): string {
+    return this.configService.getOrThrow('C5GAME_API_BASE_URL', {
+      infer: true,
+    });
+  }
+
+  get c5gameApiKey(): string | undefined {
+    return this.configService.get('C5GAME_API_KEY', {
+      infer: true,
+    });
+  }
+
+  get c5gameCurrency(): string {
+    return this.configService.getOrThrow('C5GAME_CURRENCY', {
+      infer: true,
+    });
+  }
+
+  get c5gamePageLimit(): number {
+    return this.configService.getOrThrow('C5GAME_PAGE_LIMIT', {
+      infer: true,
+    });
+  }
+
+  get c5gameBatchSize(): number {
+    return this.configService.getOrThrow('C5GAME_BATCH_SIZE', {
+      infer: true,
+    });
+  }
+
+  get c5gameBatchBudget(): number {
+    return this.configService.getOrThrow('C5GAME_BATCH_BUDGET', {
+      infer: true,
+    });
+  }
+
+  get c5gameRateLimitWindowSeconds(): number {
+    return this.configService.getOrThrow('C5GAME_RATE_LIMIT_WINDOW_SECONDS', {
+      infer: true,
+    });
+  }
+
+  get c5gameRateLimitMaxRequests(): number {
+    return this.configService.getOrThrow('C5GAME_RATE_LIMIT_MAX_REQUESTS', {
+      infer: true,
+    });
+  }
+
+  get enableCSMoney(): boolean {
+    return this.configService.getOrThrow('ENABLE_CSMONEY', {
+      infer: true,
+    });
+  }
+
+  get csmoneyApiBaseUrl(): string {
+    return this.configService.getOrThrow('CSMONEY_API_BASE_URL', {
+      infer: true,
+    });
+  }
+
+  get csmoneyApiKey(): string | undefined {
+    return this.configService.get('CSMONEY_API_KEY', {
+      infer: true,
+    });
+  }
+
+  get csmoneyCurrency(): string {
+    return this.configService.getOrThrow('CSMONEY_CURRENCY', {
+      infer: true,
+    });
+  }
+
+  get csmoneyPageLimit(): number {
+    return this.configService.getOrThrow('CSMONEY_PAGE_LIMIT', {
+      infer: true,
+    });
+  }
+
+  get csmoneyBatchSize(): number {
+    return this.configService.getOrThrow('CSMONEY_BATCH_SIZE', {
+      infer: true,
+    });
+  }
+
+  get csmoneyBatchBudget(): number {
+    return this.configService.getOrThrow('CSMONEY_BATCH_BUDGET', {
+      infer: true,
+    });
+  }
+
+  get csmoneyRateLimitWindowSeconds(): number {
+    return this.configService.getOrThrow('CSMONEY_RATE_LIMIT_WINDOW_SECONDS', {
+      infer: true,
+    });
+  }
+
+  get csmoneyRateLimitMaxRequests(): number {
+    return this.configService.getOrThrow('CSMONEY_RATE_LIMIT_MAX_REQUESTS', {
+      infer: true,
+    });
+  }
+
+  get steamSnapshotEnabled(): boolean {
+    return this.configService.getOrThrow('STEAM_SNAPSHOT_ENABLED', {
+      infer: true,
+    });
+  }
+
+  get steamSnapshotApiBaseUrl(): string {
+    return this.configService.getOrThrow('STEAM_SNAPSHOT_API_BASE_URL', {
+      infer: true,
+    });
+  }
+
+  get steamSnapshotAppId(): number {
+    return this.configService.getOrThrow('STEAM_SNAPSHOT_APP_ID', {
+      infer: true,
+    });
+  }
+
+  get steamSnapshotCurrencyCode(): number {
+    return this.configService.getOrThrow('STEAM_SNAPSHOT_CURRENCY_CODE', {
+      infer: true,
+    });
+  }
+
+  get steamSnapshotCountry(): string {
+    return this.configService.getOrThrow('STEAM_SNAPSHOT_COUNTRY', {
+      infer: true,
+    });
+  }
+
+  get steamSnapshotLanguage(): string {
+    return this.configService.getOrThrow('STEAM_SNAPSHOT_LANGUAGE', {
+      infer: true,
+    });
+  }
+
+  get steamSnapshotBatchSize(): number {
+    return this.configService.getOrThrow('STEAM_SNAPSHOT_BATCH_SIZE', {
+      infer: true,
+    });
+  }
+
+  get steamSnapshotBatchBudget(): number {
+    return this.configService.getOrThrow('STEAM_SNAPSHOT_BATCH_BUDGET', {
+      infer: true,
+    });
+  }
+
+  get steamSnapshotRequestDelayMs(): number {
+    return this.configService.getOrThrow('STEAM_SNAPSHOT_REQUEST_DELAY_MS', {
+      infer: true,
+    });
+  }
+
+  get steamSnapshotStaleAfterMinutes(): number {
+    return this.configService.getOrThrow('STEAM_SNAPSHOT_STALE_AFTER_MINUTES', {
+      infer: true,
+    });
+  }
+
+  get steamSnapshotMaxStaleMinutes(): number {
+    return this.configService.getOrThrow('STEAM_SNAPSHOT_MAX_STALE_MINUTES', {
+      infer: true,
+    });
+  }
+
+  get steamSnapshotStaleAfterMs(): number {
+    return this.steamSnapshotStaleAfterMinutes * 60 * 1000;
+  }
+
+  get steamSnapshotMaxStaleMs(): number {
+    return this.steamSnapshotMaxStaleMinutes * 60 * 1000;
+  }
+
+  get steamSnapshotRateLimitWindowSeconds(): number {
+    return this.configService.getOrThrow(
+      'STEAM_SNAPSHOT_RATE_LIMIT_WINDOW_SECONDS',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get steamSnapshotRateLimitMaxRequests(): number {
+    return this.configService.getOrThrow(
+      'STEAM_SNAPSHOT_RATE_LIMIT_MAX_REQUESTS',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get backupAggregatorEnabled(): boolean {
+    return this.configService.getOrThrow('BACKUP_AGGREGATOR_ENABLED', {
+      infer: true,
+    });
+  }
+
+  get backupAggregatorBatchSize(): number {
+    return this.configService.getOrThrow('BACKUP_AGGREGATOR_BATCH_SIZE', {
+      infer: true,
+    });
+  }
+
+  get backupAggregatorBatchBudget(): number {
+    return this.configService.getOrThrow('BACKUP_AGGREGATOR_BATCH_BUDGET', {
+      infer: true,
+    });
+  }
+
+  get backupAggregatorStaleAfterMinutes(): number {
+    return this.configService.getOrThrow(
+      'BACKUP_AGGREGATOR_STALE_AFTER_MINUTES',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get backupAggregatorStaleAfterMs(): number {
+    return this.backupAggregatorStaleAfterMinutes * 60 * 1000;
+  }
+
+  get backupAggregatorCs2ShEnabled(): boolean {
+    return this.configService.getOrThrow('BACKUP_AGGREGATOR_CS2SH_ENABLED', {
+      infer: true,
+    });
+  }
+
+  get backupAggregatorCs2ShApiBaseUrl(): string {
+    return this.configService.getOrThrow(
+      'BACKUP_AGGREGATOR_CS2SH_API_BASE_URL',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get backupAggregatorCs2ShApiKey(): string | undefined {
+    return this.configService.get('BACKUP_AGGREGATOR_CS2SH_API_KEY', {
+      infer: true,
+    });
+  }
+
+  get backupAggregatorCs2ShRequestTimeoutMs(): number {
+    return this.configService.getOrThrow(
+      'BACKUP_AGGREGATOR_CS2SH_REQUEST_TIMEOUT_MS',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get backupAggregatorCs2ShReferenceSources(): readonly string[] {
+    const rawValue = this.configService.getOrThrow(
+      'BACKUP_AGGREGATOR_CS2SH_REFERENCE_SOURCES',
+      {
+        infer: true,
+      },
+    );
+
+    return rawValue
+      .split(',')
+      .map((value) => value.trim().toLowerCase())
+      .filter((value) => value.length > 0);
+  }
+
+  isGoogleAuthConfigured(): boolean {
+    return Boolean(
+      this.googleClientId && this.googleClientSecret && this.googleRedirectUri,
+    );
+  }
+
+  isSteamAuthConfigured(): boolean {
+    return Boolean(this.steamOpenIdRealm && this.steamOpenIdReturnUrl);
+  }
+
+  isCsFloatConfigured(): boolean {
+    return Boolean(this.csfloatApiKey);
+  }
+
+  isYouPinEnabled(): boolean {
+    return this.enableYouPin;
+  }
+
+  isYouPinPrimaryTruthEnabled(): boolean {
+    return this.enableYouPin && !this.youpinReferenceOnly;
+  }
+
+  isBitSkinsEnabled(): boolean {
+    return this.enableBitSkins;
+  }
+
+  isC5GameEnabled(): boolean {
+    return this.enableC5Game;
+  }
+
+  isCSMoneyEnabled(): boolean {
+    return this.enableCSMoney;
+  }
+
+  isSteamSnapshotEnabled(): boolean {
+    return this.steamSnapshotEnabled;
+  }
+
+  isBackupAggregatorEnabled(): boolean {
+    return this.backupAggregatorEnabled;
+  }
+
+  isBackupAggregatorCs2ShEnabled(): boolean {
+    return Boolean(
+      this.backupAggregatorEnabled &&
+      this.backupAggregatorCs2ShEnabled &&
+      this.backupAggregatorCs2ShApiKey,
+    );
+  }
+
+  isTestEnvironment(): boolean {
+    return this.nodeEnv === 'test';
+  }
+}

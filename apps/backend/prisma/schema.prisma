@@ -1,0 +1,653 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+  DISABLED
+}
+
+enum IdentityProvider {
+  EMAIL
+  GOOGLE
+  DISCORD
+  STEAM
+}
+
+enum SessionStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+}
+
+enum SubscriptionProvider {
+  STRIPE
+  MANUAL
+  APP_STORE
+  PLAY_STORE
+}
+
+enum SubscriptionPlan {
+  FREE
+  FULL_ACCESS
+  ALPHA_ACCESS
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  EXPIRED
+}
+
+enum SourceKind {
+  MARKETPLACE
+  AGGREGATOR
+  INVENTORY_SERVICE
+  OFFICIAL
+}
+
+enum ItemCategory {
+  SKIN
+  KNIFE
+  GLOVE
+  CASE
+  CAPSULE
+}
+
+enum VariantPhase {
+  PHASE_1
+  PHASE_2
+  PHASE_3
+  PHASE_4
+  RUBY
+  SAPPHIRE
+  BLACK_PEARL
+  EMERALD
+}
+
+enum ListingStatus {
+  ACTIVE
+  SOLD
+  EXPIRED
+  REMOVED
+  UNKNOWN
+}
+
+enum ArchiveEntityType {
+  SOURCE_LISTING
+  MARKET_SNAPSHOT
+  MARKET_STATE
+  SOURCE_SYNC
+  SOURCE_HEALTH
+  JOB_RUN
+}
+
+enum OpportunityStatus {
+  OPEN
+  DISMISSED
+  EXECUTED
+  EXPIRED
+}
+
+enum OpportunityRiskClass {
+  LOW
+  MEDIUM
+  HIGH
+  EXTREME
+}
+
+enum AlertRuleType {
+  PRICE_BELOW
+  PRICE_ABOVE
+  SPREAD_ABOVE
+  NET_ABOVE
+  OPPORTUNITY_AVAILABLE
+  MARKET_STATE_CHANGED
+}
+
+enum InternalNotificationType {
+  ALERT_RULE_TRIGGERED
+}
+
+enum SyncType {
+  CATALOG
+  LISTINGS
+  MARKET_STATE
+  SNAPSHOTS
+  HEALTH
+}
+
+enum SyncStatus {
+  IDLE
+  RUNNING
+  SUCCEEDED
+  DEGRADED
+  FAILED
+  PAUSED
+}
+
+enum HealthStatus {
+  OK
+  DEGRADED
+  FAILED
+}
+
+enum JobType {
+  SYNC
+  INGEST
+  SNAPSHOT
+  EVALUATION
+  ALERT
+  DIAGNOSTIC
+}
+
+enum JobRunStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELED
+}
+
+model User {
+  id              String                 @id @default(uuid()) @db.Uuid
+  email           String?                @unique @db.VarChar(320)
+  displayName     String?                @db.VarChar(120)
+  role            UserRole               @default(USER)
+  status          UserStatus             @default(ACTIVE)
+  emailVerifiedAt DateTime?
+  lastSeenAt      DateTime?
+  metadata        Json?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  identities      Identity[]
+  sessions        Session[]
+  subscriptions   Subscription[]
+  watchlists      Watchlist[]
+  alertRules      AlertRule[]
+  notifications   InternalNotification[]
+
+  @@index([status, createdAt])
+}
+
+model Identity {
+  id                  String           @id @default(uuid()) @db.Uuid
+  userId              String           @db.Uuid
+  provider            IdentityProvider
+  providerUserId      String           @db.VarChar(191)
+  email               String?          @db.VarChar(320)
+  passwordHash        String?          @db.VarChar(255)
+  accessTokenHash     String?          @db.VarChar(191)
+  refreshTokenHash    String?          @db.VarChar(191)
+  lastAuthenticatedAt DateTime?
+  profile             Json?
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+  user                User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessions            Session[]
+
+  @@unique([provider, providerUserId])
+  @@index([userId, provider])
+  @@index([email])
+}
+
+model Session {
+  id               String        @id @default(uuid()) @db.Uuid
+  userId           String        @db.Uuid
+  identityId       String?       @db.Uuid
+  sessionTokenHash String        @unique @db.VarChar(191)
+  status           SessionStatus @default(ACTIVE)
+  expiresAt        DateTime
+  lastUsedAt       DateTime?
+  invalidatedAt    DateTime?
+  ipAddress        String?       @db.VarChar(64)
+  userAgent        String?       @db.Text
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  user             User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  identity         Identity?     @relation(fields: [identityId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status, expiresAt])
+  @@index([identityId])
+}
+
+model Subscription {
+  id                     String               @id @default(uuid()) @db.Uuid
+  userId                 String               @db.Uuid
+  provider               SubscriptionProvider
+  plan                   SubscriptionPlan     @default(FREE)
+  status                 SubscriptionStatus   @default(TRIALING)
+  providerCustomerId     String?              @db.VarChar(191)
+  providerSubscriptionId String?              @unique @db.VarChar(191)
+  currentPeriodStart     DateTime?
+  currentPeriodEnd       DateTime?
+  cancelAtPeriodEnd      Boolean              @default(false)
+  canceledAt             DateTime?
+  metadata               Json?
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
+  user                   User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([userId, provider, updatedAt])
+  @@index([plan, status])
+}
+
+model Source {
+  id                  String               @id @default(uuid()) @db.Uuid
+  code                String               @unique @db.VarChar(32)
+  name                String               @db.VarChar(120)
+  kind                SourceKind
+  baseUrl             String?              @db.VarChar(255)
+  isEnabled           Boolean              @default(true)
+  metadata            Json?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  sourceListings      SourceListing[]
+  rawPayloadArchives  RawPayloadArchive[]
+  marketStates        MarketState[]
+  marketSnapshots     MarketSnapshot[]
+  buyOpportunities    Opportunity[]        @relation("OpportunityBuySource")
+  sellOpportunities   Opportunity[]        @relation("OpportunitySellSource")
+  watchlistItems      WatchlistItem[]
+  alertRules          AlertRule[]
+  sourceSyncStatuses  SourceSyncStatus[]
+  sourceHealthMetrics SourceHealthMetric[]
+  jobRuns             JobRun[]
+
+  @@index([kind, isEnabled])
+}
+
+model CanonicalItem {
+  id                String           @id @default(uuid()) @db.Uuid
+  slug              String           @unique @db.VarChar(191)
+  category          ItemCategory
+  displayName       String           @db.VarChar(191)
+  baseName          String?          @db.VarChar(191)
+  weaponName        String?          @db.VarChar(120)
+  finishName        String?          @db.VarChar(120)
+  collectionName    String?          @db.VarChar(120)
+  exteriorSupported Boolean          @default(false)
+  statTrakSupported Boolean          @default(false)
+  souvenirSupported Boolean          @default(false)
+  imageUrl          String?          @db.VarChar(500)
+  metadata          Json?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  itemVariants      ItemVariant[]
+  sourceListings    SourceListing[]
+  marketStates      MarketState[]
+  marketSnapshots   MarketSnapshot[]
+  opportunities     Opportunity[]
+  watchlistItems    WatchlistItem[]
+  alertRules        AlertRule[]
+
+  @@index([category, displayName])
+}
+
+model ItemVariant {
+  id              String           @id @default(uuid()) @db.Uuid
+  canonicalItemId String           @db.Uuid
+  variantKey      String           @db.VarChar(96)
+  displayName     String           @db.VarChar(191)
+  phase           VariantPhase?
+  isDefault       Boolean          @default(false)
+  isDoppler       Boolean          @default(false)
+  isGammaDoppler  Boolean          @default(false)
+  patternRelevant Boolean          @default(false)
+  floatRelevant   Boolean          @default(false)
+  patternTemplate Int?
+  floatMin        Decimal?         @db.Decimal(6, 5)
+  floatMax        Decimal?         @db.Decimal(6, 5)
+  sortOrder       Int              @default(0)
+  metadata        Json?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  canonicalItem   CanonicalItem    @relation(fields: [canonicalItemId], references: [id], onDelete: Cascade)
+  sourceListings  SourceListing[]
+  marketStates    MarketState[]
+  marketSnapshots MarketSnapshot[]
+  opportunities   Opportunity[]
+  watchlistItems  WatchlistItem[]
+  alertRules      AlertRule[]
+
+  @@unique([canonicalItemId, variantKey])
+  @@index([canonicalItemId, isDefault])
+  @@index([phase])
+  @@index([patternRelevant, floatRelevant])
+}
+
+model SourceListing {
+  id                 String              @id @default(uuid()) @db.Uuid
+  sourceId           String              @db.Uuid
+  externalListingId  String              @db.VarChar(128)
+  sourceItemId       String              @db.VarChar(128)
+  canonicalItemId    String              @db.Uuid
+  itemVariantId      String              @db.Uuid
+  title              String              @db.VarChar(255)
+  normalizedTitle    String?             @db.VarChar(255)
+  listingUrl         String?             @db.VarChar(500)
+  currencyCode       String              @db.VarChar(3)
+  priceGross         Decimal             @db.Decimal(18, 4)
+  priceNet           Decimal?            @db.Decimal(18, 4)
+  quantityAvailable  Int                 @default(1)
+  listingStatus      ListingStatus       @default(ACTIVE)
+  listedAt           DateTime?
+  lastSeenAt         DateTime            @default(now())
+  expiresAt          DateTime?
+  attributes         Json?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  source             Source              @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  canonicalItem      CanonicalItem       @relation(fields: [canonicalItemId], references: [id], onDelete: Restrict)
+  itemVariant        ItemVariant         @relation(fields: [itemVariantId], references: [id], onDelete: Restrict)
+  rawPayloadArchives RawPayloadArchive[]
+
+  @@unique([sourceId, externalListingId])
+  @@index([sourceId, sourceItemId])
+  @@index([sourceId, itemVariantId, listingStatus])
+  @@index([canonicalItemId, itemVariantId])
+}
+
+// Append-only storage for raw source responses and ingestion payloads.
+model RawPayloadArchive {
+  id              String            @id @default(uuid()) @db.Uuid
+  sourceId        String            @db.Uuid
+  sourceListingId String?           @db.Uuid
+  jobRunId        String?           @db.Uuid
+  endpointName    String            @db.VarChar(120)
+  externalId      String?           @db.VarChar(128)
+  observedAt      DateTime
+  entityType      ArchiveEntityType
+  entityId        String            @db.VarChar(128)
+  payload         Json
+  payloadHash     String            @db.VarChar(64)
+  contentType     String?           @db.VarChar(64)
+  httpStatus      Int?
+  fetchedAt       DateTime          @default(now())
+  createdAt       DateTime          @default(now())
+  source          Source            @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  sourceListing   SourceListing?    @relation(fields: [sourceListingId], references: [id], onDelete: SetNull)
+  jobRun          JobRun?           @relation(fields: [jobRunId], references: [id], onDelete: SetNull)
+  marketSnapshots MarketSnapshot[]
+
+  @@index([sourceId, entityType, entityId, createdAt])
+  @@index([sourceId, endpointName, observedAt])
+  @@index([sourceId, externalId, observedAt])
+  @@index([sourceListingId, createdAt])
+  @@index([jobRunId, createdAt])
+}
+
+// Append-only market history snapshots; latest state is projected into MarketState.
+model MarketSnapshot {
+  id                    String             @id @default(uuid()) @db.Uuid
+  sourceId              String             @db.Uuid
+  canonicalItemId       String             @db.Uuid
+  itemVariantId         String             @db.Uuid
+  rawPayloadArchiveId   String?            @db.Uuid
+  currencyCode          String             @db.VarChar(3)
+  lowestAskGross        Decimal?           @db.Decimal(18, 4)
+  highestBidGross       Decimal?           @db.Decimal(18, 4)
+  lastTradeGross        Decimal?           @db.Decimal(18, 4)
+  average24hGross       Decimal?           @db.Decimal(18, 4)
+  listingCount          Int?
+  saleCount24h          Int?
+  sampleSize            Int?
+  confidence            Decimal?           @db.Decimal(5, 4)
+  observedAt            DateTime           @default(now())
+  createdAt             DateTime           @default(now())
+  source                Source             @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  canonicalItem         CanonicalItem      @relation(fields: [canonicalItemId], references: [id], onDelete: Restrict)
+  itemVariant           ItemVariant        @relation(fields: [itemVariantId], references: [id], onDelete: Restrict)
+  rawPayloadArchive     RawPayloadArchive? @relation(fields: [rawPayloadArchiveId], references: [id], onDelete: SetNull)
+  latestForStates       MarketState[]      @relation("MarketStateLatestSnapshot")
+  buySideOpportunities  Opportunity[]      @relation("OpportunityBuySnapshot")
+  sellSideOpportunities Opportunity[]      @relation("OpportunitySellSnapshot")
+
+  @@index([sourceId, itemVariantId, observedAt])
+  @@index([canonicalItemId, itemVariantId, observedAt])
+  @@index([itemVariantId, observedAt])
+  @@index([rawPayloadArchiveId])
+}
+
+model MarketState {
+  id               String          @id @default(uuid()) @db.Uuid
+  sourceId         String          @db.Uuid
+  canonicalItemId  String          @db.Uuid
+  itemVariantId    String          @db.Uuid
+  latestSnapshotId String?         @unique @db.Uuid
+  currencyCode     String          @db.VarChar(3)
+  lowestAskGross   Decimal?        @db.Decimal(18, 4)
+  highestBidGross  Decimal?        @db.Decimal(18, 4)
+  lastTradeGross   Decimal?        @db.Decimal(18, 4)
+  average24hGross  Decimal?        @db.Decimal(18, 4)
+  listingCount     Int?
+  saleCount24h     Int?
+  liquidityScore   Decimal?        @db.Decimal(5, 4)
+  confidence       Decimal?        @db.Decimal(5, 4)
+  observedAt       DateTime
+  lastSyncedAt     DateTime        @default(now())
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  source           Source          @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  canonicalItem    CanonicalItem   @relation(fields: [canonicalItemId], references: [id], onDelete: Restrict)
+  itemVariant      ItemVariant     @relation(fields: [itemVariantId], references: [id], onDelete: Restrict)
+  latestSnapshot   MarketSnapshot? @relation("MarketStateLatestSnapshot", fields: [latestSnapshotId], references: [id], onDelete: SetNull)
+
+  @@unique([sourceId, itemVariantId])
+  @@index([sourceId, canonicalItemId])
+  @@index([sourceId, observedAt])
+  @@index([itemVariantId, observedAt])
+  @@index([observedAt])
+}
+
+model Opportunity {
+  id              String               @id @default(uuid()) @db.Uuid
+  canonicalItemId String               @db.Uuid
+  itemVariantId   String               @db.Uuid
+  buySourceId     String               @db.Uuid
+  sellSourceId    String               @db.Uuid
+  buySnapshotId   String               @db.Uuid
+  sellSnapshotId  String               @db.Uuid
+  status          OpportunityStatus    @default(OPEN)
+  riskClass       OpportunityRiskClass
+  spreadAbsolute  Decimal              @db.Decimal(18, 4)
+  spreadPercent   Decimal              @db.Decimal(9, 4)
+  expectedNet     Decimal              @db.Decimal(18, 4)
+  expectedFees    Decimal?             @db.Decimal(18, 4)
+  confidence      Decimal              @db.Decimal(5, 4)
+  detectedAt      DateTime             @default(now())
+  expiresAt       DateTime?
+  notes           Json?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  canonicalItem   CanonicalItem        @relation(fields: [canonicalItemId], references: [id], onDelete: Restrict)
+  itemVariant     ItemVariant          @relation(fields: [itemVariantId], references: [id], onDelete: Restrict)
+  buySource       Source               @relation("OpportunityBuySource", fields: [buySourceId], references: [id], onDelete: Restrict)
+  sellSource      Source               @relation("OpportunitySellSource", fields: [sellSourceId], references: [id], onDelete: Restrict)
+  buySnapshot     MarketSnapshot       @relation("OpportunityBuySnapshot", fields: [buySnapshotId], references: [id], onDelete: Restrict)
+  sellSnapshot    MarketSnapshot       @relation("OpportunitySellSnapshot", fields: [sellSnapshotId], references: [id], onDelete: Restrict)
+
+  @@unique([buySnapshotId, sellSnapshotId])
+  @@index([status, riskClass, confidence])
+  @@index([buySourceId, sellSourceId, status])
+  @@index([canonicalItemId, itemVariantId])
+  @@index([detectedAt])
+}
+
+model Watchlist {
+  id          String          @id @default(uuid()) @db.Uuid
+  userId      String          @db.Uuid
+  name        String          @db.VarChar(120)
+  description String?         @db.Text
+  isDefault   Boolean         @default(false)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items       WatchlistItem[]
+  alertRules  AlertRule[]
+
+  @@unique([userId, name])
+  @@index([userId, updatedAt])
+}
+
+model WatchlistItem {
+  id              String        @id @default(uuid()) @db.Uuid
+  watchlistId     String        @db.Uuid
+  canonicalItemId String        @db.Uuid
+  itemVariantId   String        @db.Uuid
+  sourceId        String?       @db.Uuid
+  scopeKey        String        @default("all") @db.VarChar(64)
+  notes           String?       @db.Text
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  watchlist       Watchlist     @relation(fields: [watchlistId], references: [id], onDelete: Cascade)
+  canonicalItem   CanonicalItem @relation(fields: [canonicalItemId], references: [id], onDelete: Restrict)
+  itemVariant     ItemVariant   @relation(fields: [itemVariantId], references: [id], onDelete: Restrict)
+  source          Source?       @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  alertRules      AlertRule[]
+
+  @@unique([watchlistId, itemVariantId, scopeKey])
+  @@index([sourceId])
+  @@index([canonicalItemId, itemVariantId])
+}
+
+model AlertRule {
+  id               String                 @id @default(uuid()) @db.Uuid
+  userId           String                 @db.Uuid
+  watchlistId      String?                @db.Uuid
+  watchlistItemId  String?                @db.Uuid
+  sourceId         String?                @db.Uuid
+  canonicalItemId  String                 @db.Uuid
+  itemVariantId    String                 @db.Uuid
+  ruleType         AlertRuleType
+  thresholdValue   Decimal?               @db.Decimal(18, 4)
+  thresholdPercent Decimal?               @db.Decimal(9, 4)
+  confidenceFloor  Decimal?               @db.Decimal(5, 4)
+  isActive         Boolean                @default(true)
+  cooldownSeconds  Int                    @default(0)
+  lastTriggeredAt  DateTime?
+  config           Json?
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+  user             User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  watchlist        Watchlist?             @relation(fields: [watchlistId], references: [id], onDelete: SetNull)
+  watchlistItem    WatchlistItem?         @relation(fields: [watchlistItemId], references: [id], onDelete: SetNull)
+  source           Source?                @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  canonicalItem    CanonicalItem          @relation(fields: [canonicalItemId], references: [id], onDelete: Restrict)
+  itemVariant      ItemVariant            @relation(fields: [itemVariantId], references: [id], onDelete: Restrict)
+  notifications    InternalNotification[]
+
+  @@index([userId, isActive])
+  @@index([watchlistId])
+  @@index([watchlistItemId])
+  @@index([sourceId])
+  @@index([canonicalItemId, itemVariantId])
+}
+
+model InternalNotification {
+  id          String                   @id @default(uuid()) @db.Uuid
+  userId      String                   @db.Uuid
+  alertRuleId String?                  @db.Uuid
+  type        InternalNotificationType
+  title       String                   @db.VarChar(191)
+  body        String                   @db.Text
+  dedupeKey   String                   @db.VarChar(191)
+  data        Json?
+  readAt      DateTime?
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
+  user        User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  alertRule   AlertRule?               @relation(fields: [alertRuleId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([userId, readAt, createdAt])
+  @@index([alertRuleId, createdAt])
+  @@index([userId, dedupeKey, createdAt])
+}
+
+model SourceSyncStatus {
+  id                      String     @id @default(uuid()) @db.Uuid
+  sourceId                String     @db.Uuid
+  syncType                SyncType
+  status                  SyncStatus @default(IDLE)
+  cursor                  Json?
+  startedAt               DateTime?
+  completedAt             DateTime?
+  lastSuccessfulAt        DateTime?
+  lastFailureAt           DateTime?
+  consecutiveFailureCount Int        @default(0)
+  lastJobRunId            String?    @db.Uuid
+  details                 Json?
+  createdAt               DateTime   @default(now())
+  updatedAt               DateTime   @updatedAt
+  source                  Source     @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  lastJobRun              JobRun?    @relation("SourceSyncStatusLastJobRun", fields: [lastJobRunId], references: [id], onDelete: SetNull)
+
+  @@unique([sourceId, syncType])
+  @@index([status, updatedAt])
+}
+
+model SourceHealthMetric {
+  id                 String       @id @default(uuid()) @db.Uuid
+  sourceId           String       @db.Uuid
+  status             HealthStatus @default(OK)
+  availabilityRatio  Decimal?     @db.Decimal(5, 4)
+  errorRate          Decimal?     @db.Decimal(5, 4)
+  latencyP50Ms       Int?
+  latencyP95Ms       Int?
+  latencyP99Ms       Int?
+  requestsPerMinute  Int?
+  rateLimitRemaining Int?
+  queueDepth         Int?
+  recordedAt         DateTime     @default(now())
+  details            Json?
+  createdAt          DateTime     @default(now())
+  source             Source       @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  @@index([sourceId, recordedAt])
+  @@index([status, recordedAt])
+}
+
+model JobRun {
+  id                 String              @id @default(uuid()) @db.Uuid
+  sourceId           String?             @db.Uuid
+  queueName          String              @db.VarChar(64)
+  jobType            JobType
+  jobName            String              @db.VarChar(120)
+  externalJobId      String?             @db.VarChar(128)
+  status             JobRunStatus        @default(QUEUED)
+  attempt            Int                 @default(0)
+  maxAttempts        Int                 @default(1)
+  priority           Int?
+  payload            Json?
+  result             Json?
+  errorMessage       String?             @db.Text
+  queuedAt           DateTime            @default(now())
+  startedAt          DateTime?
+  finishedAt         DateTime?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  source             Source?             @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  rawPayloadArchives RawPayloadArchive[]
+  syncStatuses       SourceSyncStatus[]  @relation("SourceSyncStatusLastJobRun")
+
+  @@index([status, queuedAt])
+  @@index([sourceId, status])
+  @@index([queueName, jobType, status])
+  @@index([externalJobId])
+}
