@@ -123,10 +123,14 @@ export class OpportunityEnginePolicyService {
       ),
     );
 
+    const penaltyMultiplier = Math.max(
+      0.22,
+      1 - input.penalties.totalPenalty * 0.82,
+    );
+
     return this.roundRatio(
-      baseConfidence -
-        input.penalties.totalPenalty +
-        input.penalties.backupConfirmationBoost,
+      baseConfidence * penaltyMultiplier +
+        input.penalties.backupConfirmationBoost * 0.6,
     );
   }
 
@@ -134,11 +138,24 @@ export class OpportunityEnginePolicyService {
     readonly baseConfidence: number;
     readonly antiFakeAssessment: AntiFakeAssessment;
   }): number {
+    const riskMultiplier = Math.max(
+      0.45,
+      1 - input.antiFakeAssessment.riskScore * 0.42,
+    );
+    const premiumMultiplier = Math.max(
+      0.58,
+      1 - input.antiFakeAssessment.premiumContaminationRisk * 0.28,
+    );
+    const sanityMultiplier = Math.max(
+      0.52,
+      1 - input.antiFakeAssessment.marketSanityRisk * 0.24,
+    );
+
     return this.roundRatio(
-      input.baseConfidence -
-        input.antiFakeAssessment.riskScore * 0.16 -
-        input.antiFakeAssessment.premiumContaminationRisk * 0.12 -
-        input.antiFakeAssessment.marketSanityRisk * 0.1 +
+      input.baseConfidence *
+        riskMultiplier *
+        premiumMultiplier *
+        sanityMultiplier +
         input.antiFakeAssessment.confirmationScore * 0.05,
     );
   }
@@ -152,6 +169,8 @@ export class OpportunityEnginePolicyService {
     const mutableReasonCodes = [...input.reasonCodes];
     const exploratoryConfidenceFloor =
       this.resolveCandidateExploratoryConfidenceFloor(categoryPolicy);
+    const riskyExploratoryConfidenceFloor =
+      this.resolveRiskyHighUpsideConfidenceFloor(categoryPolicy);
     const riskClass = this.computeRiskClass({
       category: input.category,
       expectedNetProfit: input.expectedNetProfit,
@@ -180,6 +199,19 @@ export class OpportunityEnginePolicyService {
 
     if (input.finalConfidence < exploratoryConfidenceFloor) {
       mutableReasonCodes.push('confidence_below_candidate_floor');
+
+      if (
+        input.expectedNetProfit >= categoryPolicy.highUpsideNet &&
+        input.finalConfidence >= riskyExploratoryConfidenceFloor
+      ) {
+        mutableReasonCodes.push('high_upside_with_elevated_risk');
+
+        return {
+          disposition: 'risky_high_upside',
+          riskClass,
+          reasonCodes: this.uniqueReasonCodes(mutableReasonCodes),
+        };
+      }
 
       return {
         disposition: 'rejected',
@@ -394,6 +426,14 @@ export class OpportunityEnginePolicyService {
   }): number {
     return this.roundRatio(
       Math.max(0.18, categoryPolicy.minConfidenceCandidate * 0.45),
+    );
+  }
+
+  private resolveRiskyHighUpsideConfidenceFloor(categoryPolicy: {
+    readonly minConfidenceCandidate: number;
+  }): number {
+    return this.roundRatio(
+      Math.max(0.1, categoryPolicy.minConfidenceCandidate * 0.28),
     );
   }
 

@@ -30,6 +30,13 @@ interface CandidateVariant {
   readonly existingSourceCount: number;
 }
 
+const CORE_OVERLAP_SOURCES: readonly SourceAdapterKey[] = [
+  'skinport',
+  'csfloat',
+  'steam-snapshot',
+  'bitskins',
+];
+
 @Injectable()
 export class OverlapAwareSourceUniverseService {
   constructor(
@@ -209,12 +216,7 @@ export class OverlapAwareSourceUniverseService {
     existingSources: readonly SourceAdapterKey[],
   ): number {
     const uniqueSources = new Set(existingSources);
-    const coreOverlapSources: readonly SourceAdapterKey[] = [
-      'skinport',
-      'csfloat',
-      'steam-snapshot',
-    ];
-    const coreOverlapCount = coreOverlapSources.filter((sourceCode) =>
+    const coreOverlapCount = CORE_OVERLAP_SOURCES.filter((sourceCode) =>
       uniqueSources.has(sourceCode),
     ).length;
     const hasThreeWayPotential = uniqueSources.size >= 2 ? 1 : 0;
@@ -231,8 +233,11 @@ export class OverlapAwareSourceUniverseService {
     existingSources: readonly SourceAdapterKey[],
   ): string {
     const uniqueSources = new Set(existingSources);
+    const coreOverlapCount = CORE_OVERLAP_SOURCES.filter((sourceCode) =>
+      uniqueSources.has(sourceCode),
+    ).length;
 
-    if (uniqueSources.has('skinport') && uniqueSources.has('csfloat')) {
+    if (coreOverlapCount >= 2) {
       return 'cross-market-overlap-anchor';
     }
 

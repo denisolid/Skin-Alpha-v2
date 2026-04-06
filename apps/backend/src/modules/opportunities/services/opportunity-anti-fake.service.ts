@@ -82,9 +82,9 @@ export class OpportunityAntiFakeService {
       marketSanityRisk = this.clampRatio(
         marketSanityRisk +
           this.getCategoryWeight(input.matrix.category, {
-            light: 0.04,
-            defaultValue: 0.06,
-            heavy: 0.08,
+            light: 0.015,
+            defaultValue: 0.03,
+            heavy: 0.045,
           }),
       );
     }
@@ -329,7 +329,11 @@ export class OpportunityAntiFakeService {
         Boolean(sellIdentity?.wearFloat !== undefined)
     ) {
       reasonCodes.add('UNKNOWN_FLOAT_PREMIUM');
-      risk += input.matrix.category === ItemCategory.SKIN ? 0.18 : 0.12;
+      risk += this.getCategoryWeight(input.matrix.category, {
+        light: 0.02,
+        defaultValue: 0.1,
+        heavy: 0.07,
+      });
     }
 
     if (
@@ -338,7 +342,11 @@ export class OpportunityAntiFakeService {
         Boolean(sellIdentity?.paintSeed !== undefined)
     ) {
       reasonCodes.add('UNKNOWN_PATTERN_PREMIUM');
-      risk += 0.18;
+      risk += this.getCategoryWeight(input.matrix.category, {
+        light: 0.03,
+        defaultValue: 0.09,
+        heavy: 0.12,
+      });
     }
 
     const buyStickerCount = buyIdentity?.stickerCount ?? 0;
@@ -349,7 +357,11 @@ export class OpportunityAntiFakeService {
       Math.max(buyStickerCount, sellStickerCount) > 0
     ) {
       reasonCodes.add('UNKNOWN_STICKER_PREMIUM');
-      risk += 0.16;
+      risk += this.getCategoryWeight(input.matrix.category, {
+        light: 0.03,
+        defaultValue: 0.08,
+        heavy: 0.06,
+      });
     }
 
     if (
@@ -360,7 +372,7 @@ export class OpportunityAntiFakeService {
         Boolean(this.resolvePhase(input.sellRow))
     ) {
       reasonCodes.add('UNKNOWN_PHASE_PREMIUM');
-      risk += 0.22;
+      risk += 0.12;
     }
 
     return this.clampRatio(risk);
