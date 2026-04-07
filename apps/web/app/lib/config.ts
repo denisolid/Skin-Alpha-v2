@@ -1,4 +1,20 @@
-function readPublicEnv(key: 'NEXT_PUBLIC_APP_NAME' | 'NEXT_PUBLIC_API_BASE_URL', fallback: string): string {
+function readOptionalPublicEnv(
+  key: 'NEXT_PUBLIC_APP_NAME',
+  fallback: string,
+): string {
+  const value = process.env[key]?.trim();
+
+  if (value) {
+    return value;
+  }
+
+  return fallback;
+}
+
+function readRequiredPublicEnv(
+  key: 'NEXT_PUBLIC_API_BASE_URL',
+  fallback: string,
+): string {
   const value = process.env[key]?.trim();
 
   if (value) {
@@ -16,8 +32,11 @@ function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, '');
 }
 
-export const APP_NAME = readPublicEnv('NEXT_PUBLIC_APP_NAME', 'SkinAlpha v2');
+export const APP_NAME = readOptionalPublicEnv(
+  'NEXT_PUBLIC_APP_NAME',
+  'SkinAlpha v2',
+);
 
 export const API_BASE_URL = trimTrailingSlash(
-  readPublicEnv('NEXT_PUBLIC_API_BASE_URL', 'http://localhost:3001/api'),
+  readRequiredPublicEnv('NEXT_PUBLIC_API_BASE_URL', 'http://localhost:3001/api'),
 );

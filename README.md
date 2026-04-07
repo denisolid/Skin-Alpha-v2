@@ -133,15 +133,16 @@ corepack pnpm dev:web
 - Build Command: `pnpm build`
 - Framework Preset: `Next.js`
 - Required env vars:
-  - `NEXT_PUBLIC_APP_NAME`
   - `NEXT_PUBLIC_API_BASE_URL`
   - `SESSION_COOKIE_NAME`
+- Optional env vars:
+  - `NEXT_PUBLIC_APP_NAME`
 
 ### Backend on Render
 
 - Repo Root Directory: `.`
-- Build Command: `corepack enable && pnpm install --frozen-lockfile && pnpm --filter @skinalpha/backend prisma:generate && pnpm --filter @skinalpha/backend build`
-- Start Command: `pnpm --filter @skinalpha/backend start`
+- Build Command: `pnpm install --frozen-lockfile && pnpm --filter @skinalpha/backend prisma:generate && pnpm --filter @skinalpha/backend build`
+- Start Command: `node apps/backend/dist/main.js`
 - Health Check Path: `/healthz`
 - Runtime split:
   - API service: `APP_RUNTIME=web`
