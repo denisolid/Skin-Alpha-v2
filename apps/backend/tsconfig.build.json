@@ -3,7 +3,8 @@
   "compilerOptions": {
     "noEmit": false,
     "declaration": true,
-    "rootDir": "src"
+    "rootDir": "src",
+    "incremental": false
   },
   "include": ["src/**/*.ts"],
   "exclude": ["test", "**/*.spec.ts", "**/*.e2e-spec.ts"]

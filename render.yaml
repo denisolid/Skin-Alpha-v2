@@ -11,7 +11,7 @@ services:
     rootDir: .
     buildCommand: pnpm install --frozen-lockfile && pnpm --filter @skinalpha/backend prisma:generate && pnpm --filter @skinalpha/backend build
     preDeployCommand: pnpm --filter @skinalpha/backend prisma:migrate:deploy
-    startCommand: pnpm --filter @skinalpha/backend start
+    startCommand: node apps/backend/dist/main.js
     healthCheckPath: /healthz
     envVars:
       - key: NODE_ENV
@@ -46,7 +46,7 @@ services:
     plan: starter
     rootDir: .
     buildCommand: pnpm install --frozen-lockfile && pnpm --filter @skinalpha/backend prisma:generate && pnpm --filter @skinalpha/backend build
-    startCommand: pnpm --filter @skinalpha/backend start
+    startCommand: node apps/backend/dist/main.js
     envVars:
       - key: NODE_ENV
         value: production
