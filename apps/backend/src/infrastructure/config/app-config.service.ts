@@ -2,7 +2,105 @@ import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { RedisOptions } from 'ioredis';
 
-import type { EnvironmentVariables, NodeEnvironment } from './env.validation';
+import type {
+  EnvironmentVariables,
+  NodeEnvironment,
+  SessionCookieSameSite,
+} from './env.validation';
+
+function defaultPortForProtocol(protocol: string): string {
+  if (protocol === 'https:') {
+    return '443';
+  }
+
+  if (protocol === 'http:') {
+    return '80';
+  }
+
+  return '';
+}
+
+function parseOriginUrl(value: string): {
+  readonly hostname: string;
+  readonly origin: string;
+  readonly port: string;
+  readonly protocol: string;
+} | null {
+  try {
+    const url = new URL(value);
+
+    return {
+      hostname: url.hostname.toLowerCase(),
+      origin: url.origin.toLowerCase(),
+      port: url.port || defaultPortForProtocol(url.protocol),
+      protocol: url.protocol,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseOriginPattern(value: string): {
+  readonly hostname: string;
+  readonly origin?: string;
+  readonly port: string;
+  readonly protocol: string;
+  readonly wildcard: boolean;
+} | null {
+  const wildcardMatch = value
+    .trim()
+    .match(/^(https?):\/\/\*\.(.+?)(?::(\d+))?$/i);
+
+  if (wildcardMatch) {
+    const protocol = `${wildcardMatch[1]!.toLowerCase()}:`;
+
+    return {
+      protocol,
+      hostname: `.${wildcardMatch[2]!.toLowerCase()}`,
+      port: wildcardMatch[3] || defaultPortForProtocol(protocol),
+      wildcard: true,
+    };
+  }
+
+  const parsedOrigin = parseOriginUrl(value.trim());
+
+  if (!parsedOrigin) {
+    return null;
+  }
+
+  return {
+    origin: parsedOrigin.origin,
+    protocol: parsedOrigin.protocol,
+    hostname: parsedOrigin.hostname,
+    port: parsedOrigin.port,
+    wildcard: false,
+  };
+}
+
+function matchesOriginPattern(pattern: string, origin: string): boolean {
+  const parsedPattern = parseOriginPattern(pattern);
+  const parsedOrigin = parseOriginUrl(origin);
+
+  if (!parsedPattern || !parsedOrigin) {
+    return false;
+  }
+
+  if (
+    parsedPattern.protocol !== parsedOrigin.protocol ||
+    parsedPattern.port !== parsedOrigin.port
+  ) {
+    return false;
+  }
+
+  if (!parsedPattern.wildcard) {
+    return parsedPattern.origin === parsedOrigin.origin;
+  }
+
+  return (
+    parsedOrigin.hostname.endsWith(parsedPattern.hostname) &&
+    parsedOrigin.hostname.length > parsedPattern.hostname.length
+  );
+}
 
 @Injectable()
 export class AppConfigService {
@@ -35,6 +133,19 @@ export class AppConfigService {
     });
   }
 
+  get corsAllowedOrigins(): readonly string[] {
+    const extraOrigins =
+      this.configService
+        .get('CORS_ALLOWED_ORIGINS', {
+          infer: true,
+        })
+        ?.split(',')
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0) ?? [];
+
+    return [this.frontendUrl, ...extraOrigins];
+  }
+
   get databaseUrl(): string {
     return this.configService.getOrThrow('DATABASE_URL', {
       infer: true,
@@ -49,6 +160,12 @@ export class AppConfigService {
 
   get redisHost(): string {
     return this.configService.getOrThrow('REDIS_HOST', {
+      infer: true,
+    });
+  }
+
+  get redisUrl(): string | undefined {
+    return this.configService.get('REDIS_URL', {
       infer: true,
     });
   }
@@ -72,6 +189,26 @@ export class AppConfigService {
   }
 
   get redisConnectionOptions(): RedisOptions {
+    if (this.redisUrl) {
+      const url = new URL(this.redisUrl);
+
+      return {
+        host: url.hostname,
+        port: url.port ? Number(url.port) : 6379,
+        ...(this.redisUsername || url.username
+          ? {
+              username: this.redisUsername || decodeURIComponent(url.username),
+            }
+          : {}),
+        ...(this.redisPassword || url.password
+          ? {
+              password: this.redisPassword || decodeURIComponent(url.password),
+            }
+          : {}),
+        ...(url.protocol === 'rediss:' ? { tls: {} } : {}),
+      };
+    }
+
     return {
       host: this.redisHost,
       port: this.redisPort,
@@ -98,6 +235,12 @@ export class AppConfigService {
 
   get sessionSecureCookie(): boolean {
     return this.configService.getOrThrow('SESSION_SECURE_COOKIE', {
+      infer: true,
+    });
+  }
+
+  get sessionCookieSameSite(): SessionCookieSameSite {
+    return this.configService.getOrThrow('SESSION_COOKIE_SAME_SITE', {
       infer: true,
     });
   }
@@ -936,5 +1079,15 @@ export class AppConfigService {
 
   isTestEnvironment(): boolean {
     return this.nodeEnv === 'test';
+  }
+
+  isOriginAllowed(origin?: string | null): boolean {
+    if (!origin) {
+      return true;
+    }
+
+    return this.corsAllowedOrigins.some((pattern) =>
+      matchesOriginPattern(pattern, origin),
+    );
   }
 }

@@ -26,10 +26,13 @@ import { JobsMaintenanceDispatchService } from './services/jobs-maintenance-disp
 import { JobsService } from './services/jobs.service';
 import { SchedulerLockService } from './services/scheduler-lock.service';
 import { SmartSchedulerService } from './services/smart-scheduler.service';
+import {
+  IS_TEST_ENVIRONMENT,
+  RUNS_BACKGROUND_PROCESSORS,
+  RUNS_SCHEDULER,
+} from '../../infrastructure/runtime/runtime-mode';
 
-const isTestEnvironment = process.env.NODE_ENV === 'test';
-
-const jobsQueueImports = isTestEnvironment
+const jobsQueueImports = IS_TEST_ENVIRONMENT
   ? []
   : [
       BullModule.registerQueue(
@@ -52,7 +55,7 @@ const jobsQueueImports = isTestEnvironment
       ),
     ];
 
-const jobsQueueProviders: Provider[] = isTestEnvironment
+const jobsQueueProviders: Provider[] = IS_TEST_ENVIRONMENT
   ? [
       {
         provide: MARKET_STATE_REBUILD_QUEUE,
@@ -82,13 +85,19 @@ const jobsQueueProviders: Provider[] = isTestEnvironment
       },
     ];
 
-const jobsWorkerProviders: Provider[] = isTestEnvironment
-  ? []
-  : [MarketStateRebuildProcessor, OpportunityRescanProcessor];
+const jobsWorkerProviders: Provider[] = RUNS_BACKGROUND_PROCESSORS
+  ? [MarketStateRebuildProcessor, OpportunityRescanProcessor]
+  : [];
+
+const jobsSchedulerImports = RUNS_SCHEDULER ? [ScheduleModule.forRoot()] : [];
+
+const jobsSchedulerProviders: Provider[] = RUNS_SCHEDULER
+  ? [SchedulerLockService, SmartSchedulerService]
+  : [];
 
 @Module({
   imports: [
-    ScheduleModule.forRoot(),
+    ...jobsSchedulerImports,
     SourceAdaptersModule,
     MarketStateModule,
     OpportunitiesModule,
@@ -98,9 +107,8 @@ const jobsWorkerProviders: Provider[] = isTestEnvironment
   providers: [
     JobsService,
     JobRunService,
-    SchedulerLockService,
     JobsMaintenanceDispatchService,
-    SmartSchedulerService,
+    ...jobsSchedulerProviders,
     ...jobsQueueProviders,
     ...jobsWorkerProviders,
     {

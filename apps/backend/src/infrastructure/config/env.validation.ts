@@ -1,11 +1,14 @@
 export type NodeEnvironment = 'development' | 'test' | 'production';
+export type SessionCookieSameSite = 'lax' | 'strict' | 'none';
 
 export interface EnvironmentVariables {
   NODE_ENV: NodeEnvironment;
   APP_NAME: string;
   PORT: number;
   FRONTEND_URL: string;
+  CORS_ALLOWED_ORIGINS?: string;
   DATABASE_URL: string;
+  REDIS_URL?: string;
   REDIS_HOST: string;
   REDIS_PORT: number;
   REDIS_USERNAME?: string;
@@ -14,6 +17,7 @@ export interface EnvironmentVariables {
   SESSION_COOKIE_NAME: string;
   SESSION_TTL_DAYS: number;
   SESSION_SECURE_COOKIE: boolean;
+  SESSION_COOKIE_SAME_SITE: SessionCookieSameSite;
   AUTH_STATE_TTL_SECONDS: number;
   AUTH_EXTERNAL_REDIRECT_URL: string;
   GOOGLE_CLIENT_ID?: string;
@@ -186,6 +190,35 @@ export function validateEnv(
     config.REDIS_PASSWORD.length > 0
       ? config.REDIS_PASSWORD
       : undefined;
+  const redisUrl =
+    typeof config.REDIS_URL === 'string' && config.REDIS_URL.length > 0
+      ? config.REDIS_URL
+      : undefined;
+  let redisHostFallback = nodeEnv === 'production' ? undefined : 'localhost';
+  let redisPortFallback = 6379;
+  let resolvedRedisUsername = redisUsername;
+  let resolvedRedisPassword = redisPassword;
+
+  if (redisUrl) {
+    let parsedRedisUrl: URL;
+
+    try {
+      parsedRedisUrl = new URL(redisUrl);
+    } catch {
+      throw new Error('REDIS_URL must be a valid URL.');
+    }
+
+    redisHostFallback = parsedRedisUrl.hostname;
+    redisPortFallback = parsedRedisUrl.port
+      ? Number(parsedRedisUrl.port)
+      : 6379;
+    resolvedRedisUsername ||= parsedRedisUrl.username
+      ? decodeURIComponent(parsedRedisUrl.username)
+      : undefined;
+    resolvedRedisPassword ||= parsedRedisUrl.password
+      ? decodeURIComponent(parsedRedisUrl.password)
+      : undefined;
+  }
   const googleClientId =
     typeof config.GOOGLE_CLIENT_ID === 'string' &&
     config.GOOGLE_CLIENT_ID.length > 0
@@ -250,11 +283,40 @@ export function validateEnv(
     config.CSMONEY_API_KEY.length > 0
       ? config.CSMONEY_API_KEY
       : undefined;
+  const corsAllowedOrigins =
+    typeof config.CORS_ALLOWED_ORIGINS === 'string' &&
+    config.CORS_ALLOWED_ORIGINS.length > 0
+      ? config.CORS_ALLOWED_ORIGINS
+      : undefined;
   const backupAggregatorCs2ShApiKey =
     typeof config.BACKUP_AGGREGATOR_CS2SH_API_KEY === 'string' &&
     config.BACKUP_AGGREGATOR_CS2SH_API_KEY.length > 0
       ? config.BACKUP_AGGREGATOR_CS2SH_API_KEY
       : undefined;
+  const sessionCookieSameSite = readString(
+    config.SESSION_COOKIE_SAME_SITE,
+    'SESSION_COOKIE_SAME_SITE',
+    nodeEnv === 'production' ? 'none' : 'lax',
+  );
+
+  if (
+    sessionCookieSameSite !== 'lax' &&
+    sessionCookieSameSite !== 'strict' &&
+    sessionCookieSameSite !== 'none'
+  ) {
+    throw new Error('SESSION_COOKIE_SAME_SITE must be lax, strict, or none.');
+  }
+
+  const sessionSecureCookie = readBoolean(
+    config.SESSION_SECURE_COOKIE,
+    nodeEnv === 'production',
+  );
+
+  if (sessionCookieSameSite === 'none' && !sessionSecureCookie) {
+    throw new Error(
+      'SESSION_SECURE_COOKIE must be true when SESSION_COOKIE_SAME_SITE is none.',
+    );
+  }
 
   return {
     NODE_ENV: nodeEnv,
@@ -263,15 +325,23 @@ export function validateEnv(
     FRONTEND_URL: readString(
       config.FRONTEND_URL,
       'FRONTEND_URL',
-      'http://localhost:3000',
+      nodeEnv === 'production' ? undefined : 'http://localhost:3000',
     ),
+    ...(corsAllowedOrigins ? { CORS_ALLOWED_ORIGINS: corsAllowedOrigins } : {}),
     DATABASE_URL: readString(
       config.DATABASE_URL,
       'DATABASE_URL',
-      'postgresql://postgres:postgres@localhost:5432/skinalpha_v2?schema=public',
+      nodeEnv === 'production'
+        ? undefined
+        : 'postgresql://postgres:postgres@localhost:5432/skinalpha_v2?schema=public',
     ),
-    REDIS_HOST: readString(config.REDIS_HOST, 'REDIS_HOST', 'localhost'),
-    REDIS_PORT: readNumber(config.REDIS_PORT, 'REDIS_PORT', 6379),
+    ...(redisUrl ? { REDIS_URL: redisUrl } : {}),
+    REDIS_HOST: readString(
+      config.REDIS_HOST,
+      'REDIS_HOST',
+      redisHostFallback,
+    ),
+    REDIS_PORT: readNumber(config.REDIS_PORT, 'REDIS_PORT', redisPortFallback),
     QUEUE_PREFIX: readString(
       config.QUEUE_PREFIX,
       'QUEUE_PREFIX',
@@ -287,10 +357,8 @@ export function validateEnv(
       'SESSION_TTL_DAYS',
       30,
     ),
-    SESSION_SECURE_COOKIE: readBoolean(
-      config.SESSION_SECURE_COOKIE,
-      nodeEnv === 'production',
-    ),
+    SESSION_SECURE_COOKIE: sessionSecureCookie,
+    SESSION_COOKIE_SAME_SITE: sessionCookieSameSite,
     AUTH_STATE_TTL_SECONDS: readNumber(
       config.AUTH_STATE_TTL_SECONDS,
       'AUTH_STATE_TTL_SECONDS',
@@ -299,7 +367,7 @@ export function validateEnv(
     AUTH_EXTERNAL_REDIRECT_URL: readString(
       config.AUTH_EXTERNAL_REDIRECT_URL,
       'AUTH_EXTERNAL_REDIRECT_URL',
-      'http://localhost:3000',
+      nodeEnv === 'production' ? undefined : 'http://localhost:3000',
     ),
     GOOGLE_OIDC_DISCOVERY_URL: readString(
       config.GOOGLE_OIDC_DISCOVERY_URL,
@@ -726,8 +794,12 @@ export function validateEnv(
       'SCHEDULER_OPPORTUNITY_RESCAN_MIN_HOT_UPDATES',
       6,
     ),
-    ...(redisUsername ? { REDIS_USERNAME: redisUsername } : {}),
-    ...(redisPassword ? { REDIS_PASSWORD: redisPassword } : {}),
+    ...(resolvedRedisUsername
+      ? { REDIS_USERNAME: resolvedRedisUsername }
+      : {}),
+    ...(resolvedRedisPassword
+      ? { REDIS_PASSWORD: resolvedRedisPassword }
+      : {}),
     ...(googleClientId ? { GOOGLE_CLIENT_ID: googleClientId } : {}),
     ...(googleClientSecret ? { GOOGLE_CLIENT_SECRET: googleClientSecret } : {}),
     ...(googleRedirectUri ? { GOOGLE_REDIRECT_URI: googleRedirectUri } : {}),

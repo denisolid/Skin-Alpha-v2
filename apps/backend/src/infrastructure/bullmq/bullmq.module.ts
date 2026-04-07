@@ -20,16 +20,7 @@ export class BullMqModule {
           inject: [AppConfigService],
           useFactory: (configService: AppConfigService) => ({
             prefix: configService.queuePrefix,
-            connection: {
-              host: configService.redisHost,
-              port: configService.redisPort,
-              ...(configService.redisUsername
-                ? { username: configService.redisUsername }
-                : {}),
-              ...(configService.redisPassword
-                ? { password: configService.redisPassword }
-                : {}),
-            },
+            connection: configService.redisConnectionOptions,
           }),
         }),
       ],

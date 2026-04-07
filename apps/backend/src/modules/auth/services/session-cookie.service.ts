@@ -36,7 +36,7 @@ export class SessionCookieService {
     response.cookie(this.configService.sessionCookieName, sessionToken, {
       httpOnly: true,
       secure: this.configService.sessionSecureCookie,
-      sameSite: 'lax',
+      sameSite: this.configService.sessionCookieSameSite,
       path: '/',
       expires: expiresAt,
     });
@@ -46,7 +46,7 @@ export class SessionCookieService {
     response.clearCookie(this.configService.sessionCookieName, {
       httpOnly: true,
       secure: this.configService.sessionSecureCookie,
-      sameSite: 'lax',
+      sameSite: this.configService.sessionCookieSameSite,
       path: '/',
     });
   }

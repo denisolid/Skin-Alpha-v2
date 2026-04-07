@@ -134,10 +134,12 @@ import { SteamSnapshotPayloadNormalizerService } from './services/steam-snapshot
 import { SteamSnapshotRateLimitService } from './services/steam-snapshot-rate-limit.service';
 import { SteamSnapshotSyncService } from './services/steam-snapshot-sync.service';
 import { SteamSnapshotUniverseService } from './services/steam-snapshot-universe.service';
+import {
+  IS_TEST_ENVIRONMENT,
+  RUNS_BACKGROUND_PROCESSORS,
+} from '../../infrastructure/runtime/runtime-mode';
 
-const isTestEnvironment = process.env.NODE_ENV === 'test';
-
-const sourceIngestionQueueImports = isTestEnvironment
+const sourceIngestionQueueImports = IS_TEST_ENVIRONMENT
   ? []
   : [
       BullModule.registerQueue(
@@ -256,7 +258,7 @@ const sourceIngestionQueueImports = isTestEnvironment
       ),
     ];
 
-const sourceIngestionQueueProviders: Provider[] = isTestEnvironment
+const sourceIngestionQueueProviders: Provider[] = IS_TEST_ENVIRONMENT
   ? [
       {
         provide: ARCHIVE_RAW_PAYLOAD_QUEUE,
@@ -430,9 +432,8 @@ const sourceIngestionQueueProviders: Provider[] = isTestEnvironment
       },
     ];
 
-const sourceIngestionWorkerProviders: Provider[] = isTestEnvironment
-  ? []
-  : [
+const sourceIngestionWorkerProviders: Provider[] = RUNS_BACKGROUND_PROCESSORS
+  ? [
       ArchiveRawPayloadProcessor,
       NormalizeSourcePayloadProcessor,
       UpdateMarketStateProcessor,
@@ -447,7 +448,8 @@ const sourceIngestionWorkerProviders: Provider[] = isTestEnvironment
       BitSkinsSyncProcessor,
       C5GameSyncProcessor,
       CSMoneySyncProcessor,
-    ];
+    ]
+  : [];
 
 @Module({
   imports: [CatalogModule, ...sourceIngestionQueueImports],

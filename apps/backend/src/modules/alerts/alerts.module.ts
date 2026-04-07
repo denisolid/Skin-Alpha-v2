@@ -25,10 +25,12 @@ import { AlertRuleEvaluationService } from './services/alert-rule-evaluation.ser
 import { AlertsService } from './services/alerts.service';
 import { NoopEmailAlertChannelService } from './services/noop-email-alert-channel.service';
 import { NoopWebhookAlertChannelService } from './services/noop-webhook-alert-channel.service';
+import {
+  IS_TEST_ENVIRONMENT,
+  RUNS_BACKGROUND_PROCESSORS,
+} from '../../infrastructure/runtime/runtime-mode';
 
-const isTestEnvironment = process.env.NODE_ENV === 'test';
-
-const alertQueueImports = isTestEnvironment
+const alertQueueImports = IS_TEST_ENVIRONMENT
   ? []
   : [
       BullModule.registerQueue({
@@ -41,7 +43,7 @@ const alertQueueImports = isTestEnvironment
       }),
     ];
 
-const alertQueueProviders: Provider[] = isTestEnvironment
+const alertQueueProviders: Provider[] = IS_TEST_ENVIRONMENT
   ? [
       {
         provide: ALERT_RULE_EVALUATION_QUEUE,
@@ -59,9 +61,9 @@ const alertQueueProviders: Provider[] = isTestEnvironment
       },
     ];
 
-const alertQueueWorkerProviders: Provider[] = isTestEnvironment
-  ? []
-  : [AlertRuleEvaluationProcessor];
+const alertQueueWorkerProviders: Provider[] = RUNS_BACKGROUND_PROCESSORS
+  ? [AlertRuleEvaluationProcessor]
+  : [];
 
 @Module({
   imports: [AuthModule, OpportunitiesModule, ...alertQueueImports],

@@ -3,7 +3,7 @@ import 'server-only';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 
-import { API_BASE_URL, SESSION_COOKIE_NAME } from './config';
+import { API_BASE_URL, SESSION_COOKIE_NAME } from './server-config';
 import type {
   CurrentUser,
   CurrentSubscription,

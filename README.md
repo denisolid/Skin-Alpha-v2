@@ -67,6 +67,13 @@ Copy-Item apps/backend/.env.example apps/backend/.env
 Copy-Item apps/web/.env.example apps/web/.env.local
 ```
 
+Notes:
+
+- The root `.env.example` is only for local Docker infra.
+- The backend reads `apps/backend/.env`.
+- The frontend reads `apps/web/.env.local`.
+- Local all-in-one development keeps `APP_RUNTIME=all`.
+
 ### Install Dependencies
 
 ```powershell
@@ -115,6 +122,43 @@ corepack pnpm dev:web
 - Web: `http://localhost:3000`
 - API: `http://localhost:3001/api`
 - Health: `http://localhost:3001/api/health`
+- Healthz: `http://localhost:3001/healthz`
+
+## Production Deployment
+
+### Frontend on Vercel
+
+- Root Directory: `apps/web`
+- Install Command: `pnpm install --frozen-lockfile`
+- Build Command: `pnpm build`
+- Framework Preset: `Next.js`
+- Required env vars:
+  - `NEXT_PUBLIC_APP_NAME`
+  - `NEXT_PUBLIC_API_BASE_URL`
+  - `SESSION_COOKIE_NAME`
+
+### Backend on Render
+
+- Repo Root Directory: `.`
+- Build Command: `corepack enable && pnpm install --frozen-lockfile && pnpm --filter @skinalpha/backend prisma:generate && pnpm --filter @skinalpha/backend build`
+- Start Command: `pnpm --filter @skinalpha/backend start`
+- Health Check Path: `/healthz`
+- Runtime split:
+  - API service: `APP_RUNTIME=web`
+  - Worker service: `APP_RUNTIME=worker`
+  - Local development: `APP_RUNTIME=all`
+- Required backend env vars:
+  - `DATABASE_URL`
+  - `REDIS_URL` or `REDIS_HOST` plus `REDIS_PORT`
+  - `FRONTEND_URL`
+  - `AUTH_EXTERNAL_REDIRECT_URL`
+  - `SESSION_COOKIE_NAME`
+  - `SESSION_SECURE_COOKIE=true`
+  - `SESSION_COOKIE_SAME_SITE=none`
+- Optional for preview or multiple frontend origins:
+  - `CORS_ALLOWED_ORIGINS`
+
+The checked-in `render.yaml` defines a web service, a worker service, and a Redis-compatible Key Value instance for BullMQ.
 
 ## Common Commands
 
