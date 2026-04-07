@@ -9,7 +9,7 @@ services:
     runtime: node
     plan: starter
     rootDir: .
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @skinalpha/backend prisma:generate && pnpm --filter @skinalpha/backend build
+    buildCommand: pnpm install --frozen-lockfile && pnpm --filter @skinalpha/backend prisma:generate && pnpm --filter @skinalpha/backend build
     preDeployCommand: pnpm --filter @skinalpha/backend prisma:migrate:deploy
     startCommand: pnpm --filter @skinalpha/backend start
     healthCheckPath: /healthz
@@ -45,7 +45,7 @@ services:
     runtime: node
     plan: starter
     rootDir: .
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @skinalpha/backend prisma:generate && pnpm --filter @skinalpha/backend build
+    buildCommand: pnpm install --frozen-lockfile && pnpm --filter @skinalpha/backend prisma:generate && pnpm --filter @skinalpha/backend build
     startCommand: pnpm --filter @skinalpha/backend start
     envVars:
       - key: NODE_ENV
