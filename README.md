@@ -138,6 +138,7 @@ corepack pnpm dev:web
   - `SESSION_COOKIE_NAME`
 - Optional env vars:
   - `NEXT_PUBLIC_APP_NAME`
+- The frontend proxies browser `/api/*` requests through Next.js route handlers so auth cookies are issued on the frontend domain instead of the Render backend domain.
 
 ### Backend on Render
 

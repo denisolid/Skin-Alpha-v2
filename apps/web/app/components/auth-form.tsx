@@ -1,8 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import { startTransition, useState } from 'react';
+import { useState } from 'react';
 
 import { browserApiRequest } from '../lib/browser-api';
 import type { AuthSessionResponse } from '../lib/types';
@@ -13,7 +12,6 @@ interface AuthFormProps {
 }
 
 export function AuthForm({ mode }: AuthFormProps) {
-  const router = useRouter();
   const [formState, setFormState] = useState({
     email: '',
     password: '',
@@ -46,10 +44,7 @@ export function AuthForm({ mode }: AuthFormProps) {
         body: payload,
       });
 
-      startTransition(() => {
-        router.push('/dashboard');
-        router.refresh();
-      });
+      window.location.assign('/dashboard');
     } catch (error) {
       setErrorMessage(
         error instanceof Error ? error.message : 'Authentication failed.',
