@@ -29,6 +29,40 @@ function buildUpstreamHeaders(request: NextRequest): Headers {
   return headers;
 }
 
+function copyUpstreamResponseHeaders(upstreamResponse: Response): Headers {
+  const headers = new Headers();
+
+  for (const [key, value] of upstreamResponse.headers.entries()) {
+    if (key.toLowerCase() === 'set-cookie') {
+      continue;
+    }
+
+    headers.append(key, value);
+  }
+
+  const setCookieHeaders = (
+    upstreamResponse.headers as Headers & {
+      getSetCookie?: () => string[];
+    }
+  ).getSetCookie?.();
+
+  if (setCookieHeaders && setCookieHeaders.length > 0) {
+    for (const cookie of setCookieHeaders) {
+      headers.append('set-cookie', cookie);
+    }
+
+    return headers;
+  }
+
+  const legacySetCookieHeader = upstreamResponse.headers.get('set-cookie');
+
+  if (legacySetCookieHeader) {
+    headers.append('set-cookie', legacySetCookieHeader);
+  }
+
+  return headers;
+}
+
 async function proxyRequest(
   request: NextRequest,
   context: { params: Promise<{ path: string[] }> },
@@ -47,7 +81,7 @@ async function proxyRequest(
     cache: 'no-store',
     redirect: 'manual',
   });
-  const responseHeaders = new Headers(upstreamResponse.headers);
+  const responseHeaders = copyUpstreamResponseHeaders(upstreamResponse);
 
   return new Response(upstreamResponse.body, {
     status: upstreamResponse.status,
