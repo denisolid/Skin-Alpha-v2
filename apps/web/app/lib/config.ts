@@ -1,7 +1,10 @@
 const NEXT_PUBLIC_APP_NAME = process.env.NEXT_PUBLIC_APP_NAME?.trim();
 const NEXT_PUBLIC_API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
 
-function readOptionalPublicEnv(value: string | undefined, fallback: string): string {
+function readOptionalPublicEnv(
+  value: string | undefined,
+  fallback: string,
+): string {
   if (value) {
     return value;
   }
@@ -14,16 +17,25 @@ function readRequiredPublicEnv(
   value: string | undefined,
   fallback: string,
 ): string {
+  if (!value) {
+    if (process.env.NODE_ENV !== 'production') {
+      return fallback;
+    }
 
-  if (value) {
+    throw new Error(`Missing required environment variable ${key}.`);
+  }
+
+  if (value.startsWith('/')) {
     return value;
   }
 
   if (process.env.NODE_ENV !== 'production') {
-    return fallback;
+    return value;
   }
 
-  throw new Error(`Missing required environment variable ${key}.`);
+  throw new Error(
+    'NEXT_PUBLIC_API_BASE_URL must be a same-origin path such as "/api" in production.',
+  );
 }
 
 function trimTrailingSlash(value: string): string {
@@ -39,6 +51,6 @@ export const API_BASE_URL = trimTrailingSlash(
   readRequiredPublicEnv(
     'NEXT_PUBLIC_API_BASE_URL',
     NEXT_PUBLIC_API_BASE_URL,
-    'http://localhost:3001/api',
+    '/api',
   ),
 );

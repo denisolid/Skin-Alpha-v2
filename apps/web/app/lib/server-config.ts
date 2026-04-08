@@ -1,8 +1,9 @@
 import 'server-only';
 
-import { API_BASE_URL } from './config';
-
-function readServerEnv(key: 'SESSION_COOKIE_NAME', fallback: string): string {
+function readServerEnv(
+  key: 'SESSION_COOKIE_NAME' | 'SERVER_API_BASE_URL',
+  fallback: string,
+): string {
   const value = process.env[key]?.trim();
 
   if (value) {
@@ -16,7 +17,10 @@ function readServerEnv(key: 'SESSION_COOKIE_NAME', fallback: string): string {
   throw new Error(`Missing required environment variable ${key}.`);
 }
 
-export { API_BASE_URL };
+export const SERVER_API_BASE_URL = readServerEnv(
+  'SERVER_API_BASE_URL',
+  'http://localhost:3001/api',
+);
 
 export const SESSION_COOKIE_NAME = readServerEnv(
   'SESSION_COOKIE_NAME',

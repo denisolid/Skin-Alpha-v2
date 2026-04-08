@@ -3,7 +3,7 @@ import 'server-only';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 
-import { API_BASE_URL, SESSION_COOKIE_NAME } from './server-config';
+import { SERVER_API_BASE_URL, SESSION_COOKIE_NAME } from './server-config';
 import type {
   CurrentUser,
   CurrentSubscription,
@@ -84,7 +84,7 @@ async function serverApiRequest<TResponse>(
   }
 
   const response = await fetch(
-    `${API_BASE_URL}${path}${buildQueryString(options.searchParams)}`,
+    `${SERVER_API_BASE_URL}${path}${buildQueryString(options.searchParams)}`,
     {
       cache: 'no-store',
       headers,

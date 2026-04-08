@@ -133,7 +133,8 @@ corepack pnpm dev:web
 - Build Command: `pnpm build`
 - Framework Preset: `Next.js`
 - Required env vars:
-  - `NEXT_PUBLIC_API_BASE_URL`
+  - `NEXT_PUBLIC_API_BASE_URL=/api`
+  - `SERVER_API_BASE_URL=https://<render-api-domain>/api`
   - `SESSION_COOKIE_NAME`
 - Optional env vars:
   - `NEXT_PUBLIC_APP_NAME`
