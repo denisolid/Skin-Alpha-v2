@@ -11,10 +11,13 @@ import { AdminModule } from './modules/admin/admin.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { DiagnosticsModule } from './modules/diagnostics/diagnostics.module';
+import { FeedQueryModule } from './modules/feed-query/feed-query.module';
 import { HealthModule } from './modules/health/health.module';
 import { JobsModule } from './modules/jobs/jobs.module';
+import { LiveStreamModule } from './modules/live-stream/live-stream.module';
 import { MarketStateModule } from './modules/market-state/market-state.module';
 import { OpportunitiesModule } from './modules/opportunities/opportunities.module';
+import { SchemesModule } from './modules/schemes/schemes.module';
 import { SourceAdaptersModule } from './modules/source-adapters/source-adapters.module';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
 import { UsersModule } from './modules/users/users.module';
@@ -44,6 +47,9 @@ import { RedisModule } from './infrastructure/redis/redis.module';
     CatalogModule,
     MarketStateModule,
     OpportunitiesModule,
+    SchemesModule,
+    FeedQueryModule,
+    LiveStreamModule,
     WatchlistsModule,
     AlertsModule,
     DiagnosticsModule,

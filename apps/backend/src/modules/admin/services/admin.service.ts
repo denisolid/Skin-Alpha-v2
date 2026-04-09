@@ -16,6 +16,7 @@ import type { CatalogBootstrapResultDto } from '../../catalog/dto/catalog-bootst
 import { CatalogBootstrapService } from '../../catalog/services/catalog-bootstrap.service';
 import { MarketStateMergeService } from '../../market-state/services/market-state-merge.service';
 import { MarketStateRebuildService } from '../../market-state/services/market-state-rebuild.service';
+import { MarketStateUpdaterService } from '../../market-state/services/market-state-updater.service';
 import type { MarketStateRebuildResultDto } from '../../market-state/dto/market-state-rebuild-result.dto';
 import type { ScannerUniverseListDto } from '../../opportunities/dto/scanner-universe.dto';
 import { OpportunityRescanService } from '../../opportunities/services/opportunity-rescan.service';
@@ -27,7 +28,6 @@ import type {
   SourceSyncAcceptedDto,
   SourceSyncBatchAcceptedDto,
 } from '../../source-adapters/dto/source-sync-accepted.dto';
-import { MarketStateUpdaterService } from '../../source-adapters/services/market-state-updater.service';
 import { RawPayloadArchiveService } from '../../source-adapters/services/raw-payload-archive.service';
 import { SourceOperationsService } from '../../source-adapters/services/source-operations.service';
 import { SourceSyncDispatchService } from '../../source-adapters/services/source-sync-dispatch.service';

@@ -8,6 +8,7 @@ import {
 import { Inject, Injectable } from '@nestjs/common';
 
 import { AppConfigService } from '../../../infrastructure/config/app-config.service';
+import { MarketStateUpdaterService } from '../../market-state/services/market-state-updater.service';
 import {
   createUnknownSourceRateLimitState,
   type SourceRateLimitStateModel,
@@ -20,7 +21,6 @@ import { BACKUP_AGGREGATOR_SYNC_QUEUE_NAME } from '../domain/backup-aggregator.c
 import type { BackupReferenceObservationDto } from '../dto/backup-aggregator.dto';
 import type { BackupAggregatorSyncJobData } from '../dto/backup-aggregator.job.dto';
 import type { NormalizedMarketStateDto } from '../dto/normalized-market-state.dto';
-import { MarketStateUpdaterService } from './market-state-updater.service';
 import { RawPayloadArchiveService } from './raw-payload-archive.service';
 import { SourceOperationsService } from './source-operations.service';
 import { BackupAggregatorProviderRegistry } from './backup-aggregator-provider.registry';

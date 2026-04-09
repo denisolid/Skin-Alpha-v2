@@ -15,10 +15,7 @@ import type { AuthUserRecord } from '../../auth/domain/auth.repository';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
 import { SessionAuthGuard } from '../../auth/guards/session-auth.guard';
 import { RequireAccessTier } from '../../subscriptions/decorators/require-access-tier.decorator';
-import {
-  GetOpportunityDetailQueryDto,
-  GetOpportunityFeedQueryDto,
-} from '../dto/get-opportunity-feed.query.dto';
+import { GetOpportunityFeedQueryDto } from '../dto/get-opportunity-feed.query.dto';
 import type {
   OpportunityDetailDto,
   OpportunityFullFeedPageDto,
@@ -63,14 +60,12 @@ export class OpportunitiesController {
     return this.opportunitiesService.getFullFeed(query);
   }
 
-  @Get('feed/variants/:itemVariantId/detail')
+  @Get('feed/:opportunityKey')
   @RequireAccessTier('full_access')
   getOpportunityDetail(
-    @Param('itemVariantId', new ParseUUIDPipe({ version: '4' }))
-    itemVariantId: string,
-    @Query() query: GetOpportunityDetailQueryDto,
+    @Param('opportunityKey') opportunityKey: string,
   ): Promise<OpportunityDetailDto> {
-    return this.opportunitiesService.getOpportunityDetail(itemVariantId, query);
+    return this.opportunitiesService.getOpportunityDetail(opportunityKey);
   }
 
   @Get('feed')

@@ -1,4 +1,3 @@
-import { OpportunityStatus } from '@prisma/client';
 import { Inject, Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../../../infrastructure/prisma/prisma.service';
@@ -19,7 +18,6 @@ export class OpportunitiesRepositoryAdapter implements OpportunitiesRepository {
   async findScannerUniverseCandidates(
     input: FindScannerUniverseCandidatesInput,
   ): Promise<readonly ScannerUniverseCandidateRecord[]> {
-    const recentOpportunityCutoff = this.getRecentOpportunityCutoff();
     const variants = await this.prismaService.itemVariant.findMany({
       where: {
         ...(input.category
@@ -62,28 +60,6 @@ export class OpportunitiesRepositoryAdapter implements OpportunitiesRepository {
             observedAt: 'desc',
           },
         },
-        opportunities: {
-          where: {
-            OR: [
-              {
-                status: OpportunityStatus.OPEN,
-              },
-              {
-                detectedAt: {
-                  gte: recentOpportunityCutoff,
-                },
-              },
-            ],
-          },
-          select: {
-            status: true,
-            detectedAt: true,
-            confidence: true,
-          },
-          orderBy: {
-            detectedAt: 'desc',
-          },
-        },
       },
       ...(input.itemVariantIds?.length ? {} : { take: input.limit }),
       orderBy: [
@@ -121,7 +97,6 @@ export class OpportunitiesRepositoryAdapter implements OpportunitiesRepository {
         average24hGross: marketState.average24hGross,
         lastTradeGross: marketState.lastTradeGross,
       })),
-      opportunities: variant.opportunities,
     }));
   }
 
@@ -134,10 +109,6 @@ export class OpportunitiesRepositoryAdapter implements OpportunitiesRepository {
     });
 
     return candidates[0] ?? null;
-  }
-
-  private getRecentOpportunityCutoff(): Date {
-    return new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   }
 
   private resolveItemType(input: {

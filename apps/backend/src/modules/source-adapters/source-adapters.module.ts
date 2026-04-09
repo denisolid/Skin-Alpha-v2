@@ -3,6 +3,7 @@ import { Module, type Provider } from '@nestjs/common';
 import type { Queue } from 'bullmq';
 
 import { CatalogModule } from '../catalog/catalog.module';
+import { MarketStateWriteModule } from '../market-state/market-state-write.module';
 import { SourceAdaptersController } from './controllers/source-adapters.controller';
 import {
   SOURCE_ADAPTERS,
@@ -92,7 +93,6 @@ import { YouPinSyncProcessor } from './infrastructure/processors/youpin-sync.pro
 import { NoopSourceJobQueue } from './infrastructure/queues/noop-source-job.queue';
 import { SourceAdapterRegistry } from './infrastructure/registry/source-adapter.registry';
 import { DefaultSourceSchedulerService } from './infrastructure/scheduler/default-source-scheduler.service';
-import { MarketStateUpdaterService } from './services/market-state-updater.service';
 import { RawPayloadArchiveService } from './services/raw-payload-archive.service';
 import { SourceAdaptersService } from './services/source-adapters.service';
 import { SourceIngestionService } from './services/source-ingestion.service';
@@ -452,7 +452,7 @@ const sourceIngestionWorkerProviders: Provider[] = RUNS_BACKGROUND_PROCESSORS
   : [];
 
 @Module({
-  imports: [CatalogModule, ...sourceIngestionQueueImports],
+  imports: [CatalogModule, MarketStateWriteModule, ...sourceIngestionQueueImports],
   controllers: [SourceAdaptersController],
   providers: [
     SkinportSourceAdapter,
@@ -472,7 +472,6 @@ const sourceIngestionWorkerProviders: Provider[] = RUNS_BACKGROUND_PROCESSORS
     RawPayloadArchiveService,
     SourcePayloadNormalizationService,
     SourceListingStorageService,
-    MarketStateUpdaterService,
     SourceOperationsService,
     BackupAggregatorNamingService,
     BackupAggregatorRateLimitService,
@@ -561,7 +560,6 @@ const sourceIngestionWorkerProviders: Provider[] = RUNS_BACKGROUND_PROCESSORS
     SourceSyncDispatchService,
     SourceIngestionService,
     RawPayloadArchiveService,
-    MarketStateUpdaterService,
     SourceOperationsService,
   ],
 })

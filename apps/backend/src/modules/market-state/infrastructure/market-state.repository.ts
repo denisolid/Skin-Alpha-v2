@@ -3,7 +3,7 @@ import { Inject, Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../../../infrastructure/prisma/prisma.service';
 import type { SourceAdapterKey } from '../../source-adapters/domain/source-adapter.types';
-import type { MarketStateRepository } from '../domain/market-state.repository';
+import type { MarketReadRepository } from '../domain/market-read.repository';
 
 type ItemVariantRecord = Prisma.ItemVariantGetPayload<{
   include: {
@@ -24,7 +24,7 @@ type ItemVariantRecord = Prisma.ItemVariantGetPayload<{
 }>;
 
 @Injectable()
-export class MarketStateRepositoryAdapter implements MarketStateRepository {
+export class MarketStateRepositoryAdapter implements MarketReadRepository {
   constructor(
     @Inject(PrismaService)
     private readonly prismaService: PrismaService,

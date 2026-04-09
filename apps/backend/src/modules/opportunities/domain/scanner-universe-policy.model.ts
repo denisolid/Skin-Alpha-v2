@@ -7,7 +7,7 @@ interface ScannerCategoryWeights {
   readonly liquidity: number;
   readonly priceMovement: number;
   readonly sourceActivity: number;
-  readonly opportunityFrequency: number;
+  readonly pairability: number;
 }
 
 export interface ScannerCategoryPolicy {
@@ -34,7 +34,7 @@ export const SCANNER_CATEGORY_POLICIES: Readonly<
       liquidity: 0.34,
       priceMovement: 0.24,
       sourceActivity: 0.2,
-      opportunityFrequency: 0.22,
+      pairability: 0.22,
     },
     sourceBias: {
       skinport: 12,
@@ -65,7 +65,7 @@ export const SCANNER_CATEGORY_POLICIES: Readonly<
       liquidity: 0.26,
       priceMovement: 0.28,
       sourceActivity: 0.18,
-      opportunityFrequency: 0.28,
+      pairability: 0.28,
     },
     sourceBias: {
       csfloat: 12,
@@ -97,7 +97,7 @@ export const SCANNER_CATEGORY_POLICIES: Readonly<
       liquidity: 0.25,
       priceMovement: 0.28,
       sourceActivity: 0.19,
-      opportunityFrequency: 0.28,
+      pairability: 0.28,
     },
     sourceBias: {
       csfloat: 12,
@@ -129,7 +129,7 @@ export const SCANNER_CATEGORY_POLICIES: Readonly<
       liquidity: 0.4,
       priceMovement: 0.16,
       sourceActivity: 0.22,
-      opportunityFrequency: 0.22,
+      pairability: 0.22,
     },
     sourceBias: {
       skinport: 14,
@@ -160,7 +160,7 @@ export const SCANNER_CATEGORY_POLICIES: Readonly<
       liquidity: 0.38,
       priceMovement: 0.16,
       sourceActivity: 0.22,
-      opportunityFrequency: 0.24,
+      pairability: 0.24,
     },
     sourceBias: {
       skinport: 12,

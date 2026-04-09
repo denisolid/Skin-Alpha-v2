@@ -11,9 +11,9 @@ import { AppConfigService } from '../../../infrastructure/config/app-config.serv
 import type { AuthUserRecord } from '../../auth/domain/auth.repository';
 import { MarketFreshnessPolicyService } from '../../market-state/services/market-freshness-policy.service';
 import type { OpportunityReasonCode } from '../../opportunities/domain/opportunity-engine.model';
-import type { GetOpportunityEngineQueryDto } from '../../opportunities/dto/get-opportunity-engine.query.dto';
 import type { OpportunityEngineScanResultDto } from '../../opportunities/dto/opportunity-engine.dto';
 import { OpportunityEngineService } from '../../opportunities/services/opportunity-engine.service';
+import { ScannerUniverseService } from '../../opportunities/services/scanner-universe.service';
 import type { DiagnosticsUseCase } from '../application/diagnostics.use-case';
 import {
   DIAGNOSTICS_REPOSITORY,
@@ -94,6 +94,8 @@ export class DiagnosticsService implements DiagnosticsUseCase {
     private readonly marketFreshnessPolicyService: MarketFreshnessPolicyService,
     @Inject(OpportunityEngineService)
     private readonly opportunityEngineService: OpportunityEngineService,
+    @Inject(ScannerUniverseService)
+    private readonly scannerUniverseService: ScannerUniverseService,
   ) {}
 
   async getSourceHealthDashboard(
@@ -404,11 +406,11 @@ export class DiagnosticsService implements DiagnosticsUseCase {
         this.diagnosticsRepository.listSourceOverviewRecords(),
         this.diagnosticsRepository.getOverlapCoverage(),
         this.diagnosticsRepository.listPairableVariantCountsBySourcePair(),
-        this.opportunityEngineService.evaluateScannerUniverse({
+        this.evaluateScannerUniverse({
           limit: query.limit ?? DEFAULT_REJECT_SCAN_LIMIT,
           maxPairsPerItem: DEFAULT_REJECT_MAX_PAIRS,
           includeRejected: true,
-        } satisfies GetOpportunityEngineQueryDto),
+        }),
       ]);
     const sourceOverviewByCode = new Map(
       sourceOverviewRecords.map(
@@ -580,13 +582,13 @@ export class DiagnosticsService implements DiagnosticsUseCase {
     this.assertAdminUser(user, 'opportunity reject diagnostics');
 
     const engineResult =
-      await this.opportunityEngineService.evaluateScannerUniverse({
+      await this.evaluateScannerUniverse({
         ...(query.tier ? { tier: query.tier } : {}),
         ...(query.category ? { category: query.category } : {}),
         limit: query.limit ?? DEFAULT_REJECT_SCAN_LIMIT,
         maxPairsPerItem: query.maxPairsPerItem ?? DEFAULT_REJECT_MAX_PAIRS,
         includeRejected: true,
-      } satisfies GetOpportunityEngineQueryDto);
+      });
     const rejectedEvaluations = engineResult.results.flatMap((result) =>
       result.evaluations.filter(
         (evaluation) => evaluation.disposition === 'rejected',
@@ -1268,6 +1270,32 @@ export class DiagnosticsService implements DiagnosticsUseCase {
     }
 
     return counts;
+  }
+
+  private async evaluateScannerUniverse(input: {
+    readonly tier?: 'hot' | 'warm' | 'cold';
+    readonly category?: Parameters<
+      ScannerUniverseService['getScannerUniverse']
+    >[0] extends infer T
+      ? T extends { category?: infer C }
+        ? C
+        : never
+      : never;
+    readonly limit: number;
+    readonly maxPairsPerItem: number;
+    readonly includeRejected: boolean;
+  }): Promise<OpportunityEngineScanResultDto> {
+    const universe = await this.scannerUniverseService.getScannerUniverse({
+      ...(input.tier ? { tier: input.tier } : {}),
+      ...(input.category ? { category: input.category } : {}),
+      limit: input.limit,
+    });
+
+    return this.opportunityEngineService.evaluateVariants({
+      itemVariantIds: universe.items.map((item) => item.itemVariantId),
+      includeRejected: input.includeRejected,
+      maxPairs: input.maxPairsPerItem,
+    });
   }
 
   private getQueueOutcomeCount(

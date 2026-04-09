@@ -3,13 +3,13 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { Job } from 'bullmq';
 
 import { AppLoggerService } from '../../../../infrastructure/logging/app-logger.service';
+import type { MarketStateUpdateResultDto } from '../../../market-state/dto/market-state-update-result.dto';
+import { MarketStateUpdaterService } from '../../../market-state/services/market-state-updater.service';
 import {
   UPDATE_MARKET_STATE_JOB_NAME,
   UPDATE_MARKET_STATE_QUEUE_NAME,
 } from '../../domain/source-ingestion.constants';
-import type { MarketStateUpdateResultDto } from '../../dto/market-state-update-result.dto';
 import type { UpdateMarketStateJobData } from '../../dto/update-market-state.job.dto';
-import { MarketStateUpdaterService } from '../../services/market-state-updater.service';
 
 @Injectable()
 @Processor(UPDATE_MARKET_STATE_QUEUE_NAME)

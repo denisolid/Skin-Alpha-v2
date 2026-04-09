@@ -2,12 +2,12 @@ import { NotFoundException } from '@nestjs/common';
 import { Inject, Injectable } from '@nestjs/common';
 
 import {
-  MARKET_STATE_REPOSITORY,
+  MARKET_READ_REPOSITORY,
   type MarketSnapshotRecord,
-  type MarketStateRepository,
+  type MarketReadRepository,
   type MarketStateSourceRecord,
   type MarketStateVariantRecord,
-} from '../domain/market-state.repository';
+} from '../domain/market-read.repository';
 import type { MarketSnapshotHistoryDto } from '../dto/market-snapshot-history.dto';
 import { MarketFreshnessPolicyService } from './market-freshness-policy.service';
 
@@ -27,8 +27,8 @@ const DEFAULT_SNAPSHOT_HISTORY_LIMIT = 30;
 @Injectable()
 export class MarketSnapshotService {
   constructor(
-    @Inject(MARKET_STATE_REPOSITORY)
-    private readonly marketStateRepository: MarketStateRepository,
+    @Inject(MARKET_READ_REPOSITORY)
+    private readonly marketStateRepository: MarketReadRepository,
     @Inject(MarketFreshnessPolicyService)
     private readonly marketFreshnessPolicyService: MarketFreshnessPolicyService,
   ) {}

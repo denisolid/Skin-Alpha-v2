@@ -1,9 +1,1 @@
-import type { SourceAdapterKey } from '../domain/source-adapter.types';
-
-export interface MarketStateUpdateResultDto {
-  readonly source: SourceAdapterKey;
-  readonly rawPayloadArchiveId?: string;
-  readonly snapshotCount: number;
-  readonly upsertedStateCount: number;
-  readonly skippedCount: number;
-}
+export type { MarketStateUpdateResultDto } from '../../market-state/dto/market-state-update-result.dto';

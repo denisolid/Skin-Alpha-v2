@@ -1,8 +1,5 @@
 import type { OpportunitiesStatusDto } from '../dto/opportunities-status.dto';
-import type {
-  GetOpportunityDetailQueryDto,
-  GetOpportunityFeedQueryDto,
-} from '../dto/get-opportunity-feed.query.dto';
+import type { GetOpportunityFeedQueryDto } from '../dto/get-opportunity-feed.query.dto';
 import type {
   OpportunityDetailDto,
   OpportunityFullFeedPageDto,
@@ -42,8 +39,7 @@ export interface OpportunitiesUseCase {
     query?: GetOpportunityFeedQueryDto,
   ): Promise<OpportunityFullFeedPageDto>;
   getOpportunityDetail(
-    itemVariantId: string,
-    query: GetOpportunityDetailQueryDto,
+    opportunityKey: string,
   ): Promise<OpportunityDetailDto>;
   getRejectDiagnostics(
     query: GetOpportunityFeedQueryDto | undefined,

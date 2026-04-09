@@ -2,12 +2,12 @@ import { NotFoundException } from '@nestjs/common';
 import { Inject, Injectable } from '@nestjs/common';
 
 import {
-  MARKET_STATE_REPOSITORY,
+  MARKET_READ_REPOSITORY,
   type MarketSnapshotRecord,
-  type MarketStateRepository,
+  type MarketReadRepository,
   type MarketStateSourceRecord,
   type MarketStateVariantRecord,
-} from '../domain/market-state.repository';
+} from '../domain/market-read.repository';
 import type {
   CanonicalMarketMatrixDto,
   MergedMarketMatrixDto,
@@ -40,8 +40,8 @@ const DEFAULT_FALLBACK_SCAN_LIMIT = 50;
 @Injectable()
 export class MarketStateMergeService {
   constructor(
-    @Inject(MARKET_STATE_REPOSITORY)
-    private readonly marketStateRepository: MarketStateRepository,
+    @Inject(MARKET_READ_REPOSITORY)
+    private readonly marketStateRepository: MarketReadRepository,
     @Inject(MarketFreshnessPolicyService)
     private readonly marketFreshnessPolicyService: MarketFreshnessPolicyService,
     @Inject(MarketSnapshotService)

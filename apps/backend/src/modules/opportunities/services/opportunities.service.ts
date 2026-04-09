@@ -2,10 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 
 import type { AuthUserRecord } from '../../auth/domain/auth.repository';
 import type { OpportunitiesUseCase } from '../application/opportunities.use-case';
-import type {
-  GetOpportunityDetailQueryDto,
-  GetOpportunityFeedQueryDto,
-} from '../dto/get-opportunity-feed.query.dto';
+import type { GetOpportunityFeedQueryDto } from '../dto/get-opportunity-feed.query.dto';
 import type {
   OpportunityDetailDto,
   OpportunityFullFeedPageDto,
@@ -50,7 +47,23 @@ export class OpportunitiesService implements OpportunitiesUseCase {
   evaluateScannerUniverse(
     query?: GetOpportunityEngineInputDto,
   ): Promise<OpportunityEngineScanResultDto> {
-    return this.opportunityEngineService.evaluateScannerUniverse(query);
+    return this.scannerUniverseService
+      .getScannerUniverse({
+        ...(query?.tier ? { tier: query.tier } : {}),
+        ...(query?.category ? { category: query.category } : {}),
+        ...(query?.limit !== undefined ? { limit: query.limit } : {}),
+      })
+      .then((universe) =>
+        this.opportunityEngineService.evaluateVariants({
+          itemVariantIds: universe.items.map((item) => item.itemVariantId),
+          ...(query?.includeRejected !== undefined
+            ? { includeRejected: query.includeRejected }
+            : {}),
+          ...(query?.maxPairsPerItem !== undefined
+            ? { maxPairs: query.maxPairsPerItem }
+            : {}),
+        }),
+      );
   }
 
   evaluateVariantOpportunities(
@@ -73,13 +86,9 @@ export class OpportunitiesService implements OpportunitiesUseCase {
   }
 
   getOpportunityDetail(
-    itemVariantId: string,
-    query: GetOpportunityDetailQueryDto,
+    opportunityKey: string,
   ): Promise<OpportunityDetailDto> {
-    return this.opportunityFeedService.getOpportunityDetail(
-      itemVariantId,
-      query,
-    );
+    return this.opportunityFeedService.getOpportunityDetail(opportunityKey);
   }
 
   getRejectDiagnostics(

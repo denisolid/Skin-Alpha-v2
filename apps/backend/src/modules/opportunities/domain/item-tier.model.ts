@@ -6,7 +6,7 @@ export interface ScannerTierScoreComponents {
   readonly liquidity: number;
   readonly priceMovement: number;
   readonly sourceActivity: number;
-  readonly opportunityFrequency: number;
+  readonly pairability: number;
   readonly composite: number;
 }
 

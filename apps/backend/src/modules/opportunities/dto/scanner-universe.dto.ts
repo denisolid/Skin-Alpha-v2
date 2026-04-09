@@ -10,14 +10,14 @@ export interface ScannerUniverseSignalScoresDto {
   readonly liquidity: number;
   readonly priceMovement: number;
   readonly sourceActivity: number;
-  readonly opportunityFrequency: number;
+  readonly pairability: number;
   readonly composite: number;
 }
 
-export interface ScannerUniverseOpportunityMetricsDto {
-  readonly openCount: number;
-  readonly recent7dCount: number;
-  readonly recent30dCount: number;
+export interface ScannerUniversePairabilityMetricsDto {
+  readonly currentReadyPairCount: number;
+  readonly usablePrimarySourceCount: number;
+  readonly freshPrimarySourceCount: number;
 }
 
 export interface ScannerUniverseSourceMetricsDto {
@@ -54,7 +54,7 @@ export interface ScannerUniverseItemDto {
   readonly tier: ScannerItemTier;
   readonly compositeScore: number;
   readonly signals: ScannerUniverseSignalScoresDto;
-  readonly opportunityMetrics: ScannerUniverseOpportunityMetricsDto;
+  readonly pairabilityMetrics: ScannerUniversePairabilityMetricsDto;
   readonly sourceMetrics: ScannerUniverseSourceMetricsDto;
   readonly pollingPlan: readonly ScannerUniversePollingSourcePlanDto[];
   readonly promotionReasons: readonly string[];

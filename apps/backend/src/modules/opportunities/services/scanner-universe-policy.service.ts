@@ -61,9 +61,9 @@ export class ScannerUniversePolicyService {
       evaluatedStates,
       candidate.category,
     );
-    const opportunityMetrics = this.deriveOpportunityMetrics(
-      candidate,
-      generatedAt,
+    const pairabilityMetrics = this.derivePairabilityMetrics(
+      usablePrimaryStates.length,
+      freshPrimaryStates.length,
     );
     const signals = {
       liquidity: this.deriveLiquidityScore(evaluatedStates, candidate.category),
@@ -75,10 +75,10 @@ export class ScannerUniversePolicyService {
         freshPrimaryStates.length,
         categoryPolicy.sourceActivityTargetSources,
       ),
-      opportunityFrequency: this.deriveOpportunityFrequencyScore(
-        opportunityMetrics.openCount,
-        opportunityMetrics.recent7dCount,
-        opportunityMetrics.recent30dCount,
+      pairability: this.derivePairabilityScore(
+        pairabilityMetrics.currentReadyPairCount,
+        pairabilityMetrics.usablePrimarySourceCount,
+        pairabilityMetrics.freshPrimarySourceCount,
       ),
       composite: 0,
     };
@@ -86,8 +86,7 @@ export class ScannerUniversePolicyService {
       signals.liquidity * categoryPolicy.weights.liquidity +
         signals.priceMovement * categoryPolicy.weights.priceMovement +
         signals.sourceActivity * categoryPolicy.weights.sourceActivity +
-        signals.opportunityFrequency *
-          categoryPolicy.weights.opportunityFrequency,
+        signals.pairability * categoryPolicy.weights.pairability,
     );
     signals.composite = compositeScore;
     let tier = this.resolveScoreTier(candidate.category, compositeScore);
@@ -99,12 +98,12 @@ export class ScannerUniversePolicyService {
       promotionReasons.push('manual_hot_override');
     } else {
       if (
-        opportunityMetrics.openCount >= 1 &&
+        pairabilityMetrics.currentReadyPairCount >= 1 &&
         usablePrimaryStates.length >= 2 &&
         tier !== 'hot'
       ) {
         tier = promoteScannerItemTier(tier);
-        promotionReasons.push('recent_open_opportunity_signal');
+        promotionReasons.push('current_multi_source_readiness');
       }
 
       if (
@@ -121,9 +120,12 @@ export class ScannerUniversePolicyService {
         demotionReasons.push('low_fresh_source_activity');
       }
 
-      if (signals.liquidity < 0.12 && opportunityMetrics.openCount === 0) {
+      if (
+        signals.liquidity < 0.12 &&
+        pairabilityMetrics.currentReadyPairCount === 0
+      ) {
         tier = demoteScannerItemTier(tier);
-        demotionReasons.push('thin_liquidity_without_recent_opportunities');
+        demotionReasons.push('thin_liquidity_without_pairable_coverage');
       }
 
       if (usablePrimaryStates.length === 0 && backupStates.length > 0) {
@@ -142,7 +144,7 @@ export class ScannerUniversePolicyService {
       tier,
       compositeScore,
       signals,
-      opportunityMetrics,
+      pairabilityMetrics,
       sourceMetrics: {
         totalSourceCount: evaluatedStates.length,
         usableSourceCount: usablePrimaryStates.length,
@@ -273,33 +275,39 @@ export class ScannerUniversePolicyService {
     return clampUniverseScore(freshComponent * 0.7 + usableComponent * 0.3);
   }
 
-  private deriveOpportunityFrequencyScore(
-    openCount: number,
-    recent7dCount: number,
-    recent30dCount: number,
+  private derivePairabilityScore(
+    currentReadyPairCount: number,
+    usablePrimarySourceCount: number,
+    freshPrimarySourceCount: number,
   ): number {
+    const readyPairComponent = clampUniverseScore(currentReadyPairCount / 3);
+    const usableSourceComponent = clampUniverseScore(
+      usablePrimarySourceCount / 2,
+    );
+    const freshSourceComponent = clampUniverseScore(
+      freshPrimarySourceCount / 2,
+    );
+
     return clampUniverseScore(
-      openCount * 0.5 + recent7dCount * 0.18 + recent30dCount * 0.04,
+      readyPairComponent * 0.5 +
+        usableSourceComponent * 0.3 +
+        freshSourceComponent * 0.2,
     );
   }
 
-  private deriveOpportunityMetrics(
-    candidate: ScannerUniverseCandidateRecord,
-    generatedAt: Date,
+  private derivePairabilityMetrics(
+    usablePrimarySourceCount: number,
+    freshPrimarySourceCount: number,
   ) {
-    const recent7dCutoff = generatedAt.getTime() - 7 * 24 * 60 * 60 * 1000;
-    const recent30dCutoff = generatedAt.getTime() - 30 * 24 * 60 * 60 * 1000;
+    const currentReadyPairCount =
+      usablePrimarySourceCount >= 2
+        ? Math.floor((usablePrimarySourceCount * (usablePrimarySourceCount - 1)) / 2)
+        : 0;
 
     return {
-      openCount: candidate.opportunities.filter(
-        (opportunity) => opportunity.status === 'OPEN',
-      ).length,
-      recent7dCount: candidate.opportunities.filter(
-        (opportunity) => opportunity.detectedAt.getTime() >= recent7dCutoff,
-      ).length,
-      recent30dCount: candidate.opportunities.filter(
-        (opportunity) => opportunity.detectedAt.getTime() >= recent30dCutoff,
-      ).length,
+      currentReadyPairCount,
+      usablePrimarySourceCount,
+      freshPrimarySourceCount,
     };
   }
 

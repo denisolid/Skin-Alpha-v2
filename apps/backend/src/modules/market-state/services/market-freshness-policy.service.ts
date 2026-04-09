@@ -5,7 +5,7 @@ import { AppConfigService } from '../../../infrastructure/config/app-config.serv
 import type {
   MarketStateSourceRecord,
   MarketSnapshotRecord,
-} from '../domain/market-state.repository';
+} from '../domain/market-read.repository';
 import type { MarketFreshnessDto } from '../dto/market-freshness.dto';
 import type { MarketFetchMode } from '../dto/merged-market-matrix.dto';
 

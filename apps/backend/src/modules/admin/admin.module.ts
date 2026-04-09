@@ -2,7 +2,8 @@ import { Module } from '@nestjs/common';
 
 import { AuthModule } from '../auth/auth.module';
 import { CatalogModule } from '../catalog/catalog.module';
-import { MarketStateModule } from '../market-state/market-state.module';
+import { MarketReadModule } from '../market-state/market-read.module';
+import { MarketStateWriteModule } from '../market-state/market-state-write.module';
 import { OpportunitiesModule } from '../opportunities/opportunities.module';
 import { SourceAdaptersModule } from '../source-adapters/source-adapters.module';
 import { AdminController } from './controllers/admin.controller';
@@ -12,7 +13,8 @@ import { AdminService } from './services/admin.service';
   imports: [
     AuthModule,
     CatalogModule,
-    MarketStateModule,
+    MarketReadModule,
+    MarketStateWriteModule,
     OpportunitiesModule,
     SourceAdaptersModule,
   ],

@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { AuthModule } from '../auth/auth.module';
-import { MarketStateModule } from '../market-state/market-state.module';
+import { MarketReadModule } from '../market-state/market-read.module';
 import { OpportunitiesModule } from '../opportunities/opportunities.module';
 import { DiagnosticsController } from './controllers/diagnostics.controller';
 import { DIAGNOSTICS_REPOSITORY } from './domain/diagnostics.repository';
@@ -9,7 +9,7 @@ import { DiagnosticsRepositoryAdapter } from './infrastructure/diagnostics.repos
 import { DiagnosticsService } from './services/diagnostics.service';
 
 @Module({
-  imports: [AuthModule, MarketStateModule, OpportunitiesModule],
+  imports: [AuthModule, MarketReadModule, OpportunitiesModule],
   controllers: [DiagnosticsController],
   providers: [
     DiagnosticsService,

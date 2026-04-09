@@ -1,9 +1,4 @@
-import type {
-  ItemCategory,
-  OpportunityStatus,
-  Prisma,
-  SourceKind,
-} from '@prisma/client';
+import type { ItemCategory, Prisma, SourceKind } from '@prisma/client';
 
 import type { SourceAdapterKey } from '../../source-adapters/domain/source-adapter.types';
 
@@ -23,12 +18,6 @@ export interface ScannerUniverseMarketStateRecord {
   readonly lastTradeGross?: Prisma.Decimal | null;
 }
 
-export interface ScannerUniverseOpportunityRecord {
-  readonly status: OpportunityStatus;
-  readonly detectedAt: Date;
-  readonly confidence: Prisma.Decimal;
-}
-
 export interface ScannerUniverseCandidateRecord {
   readonly canonicalItemId: string;
   readonly canonicalDisplayName: string;
@@ -37,7 +26,6 @@ export interface ScannerUniverseCandidateRecord {
   readonly itemVariantId: string;
   readonly variantDisplayName: string;
   readonly marketStates: readonly ScannerUniverseMarketStateRecord[];
-  readonly opportunities: readonly ScannerUniverseOpportunityRecord[];
 }
 
 export interface FindScannerUniverseCandidatesInput {

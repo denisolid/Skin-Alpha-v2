@@ -110,6 +110,26 @@ enum OpportunityRiskClass {
   EXTREME
 }
 
+enum SchemeStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+enum UserItemActionType {
+  FAVORITE
+  BLACKLIST
+  MUTED
+  PINNED
+}
+
+enum NotificationChannel {
+  INTERNAL
+  EMAIL
+  WEBHOOK
+}
+
 enum AlertRuleType {
   PRICE_BELOW
   PRICE_ABOVE
@@ -177,6 +197,10 @@ model User {
   identities      Identity[]
   sessions        Session[]
   subscriptions   Subscription[]
+  schemes         Scheme[]
+  itemActions     UserItemAction[]
+  alertPreference UserAlertPreference?
+  notificationSubscriptions NotificationSubscription[]
   watchlists      Watchlist[]
   alertRules      AlertRule[]
   notifications   InternalNotification[]
@@ -263,6 +287,7 @@ model Source {
   marketSnapshots     MarketSnapshot[]
   buyOpportunities    Opportunity[]        @relation("OpportunityBuySource")
   sellOpportunities   Opportunity[]        @relation("OpportunitySellSource")
+  userItemActions     UserItemAction[]
   watchlistItems      WatchlistItem[]
   alertRules          AlertRule[]
   sourceSyncStatuses  SourceSyncStatus[]
@@ -293,6 +318,7 @@ model CanonicalItem {
   marketStates      MarketState[]
   marketSnapshots   MarketSnapshot[]
   opportunities     Opportunity[]
+  userItemActions   UserItemAction[]
   watchlistItems    WatchlistItem[]
   alertRules        AlertRule[]
 
@@ -322,6 +348,7 @@ model ItemVariant {
   marketStates    MarketState[]
   marketSnapshots MarketSnapshot[]
   opportunities   Opportunity[]
+  userItemActions UserItemAction[]
   watchlistItems  WatchlistItem[]
   alertRules      AlertRule[]
 
@@ -453,6 +480,96 @@ model MarketState {
   @@index([sourceId, observedAt])
   @@index([itemVariantId, observedAt])
   @@index([observedAt])
+}
+
+model Scheme {
+  id             String       @id @default(uuid()) @db.Uuid
+  userId         String       @db.Uuid
+  name           String       @db.VarChar(120)
+  description    String?      @db.Text
+  status         SchemeStatus @default(DRAFT)
+  revision       Int          @default(1)
+  originPresetKey String?     @db.VarChar(64)
+  feedEnabled    Boolean      @default(true)
+  liveEnabled    Boolean      @default(false)
+  alertsEnabled  Boolean      @default(false)
+  priority       Int          @default(0)
+  configHash     String       @db.VarChar(64)
+  scopeJson      Json
+  selectionJson  Json
+  thresholdsJson Json
+  validationJson Json
+  viewJson       Json
+  alertJson      Json?
+  liveJson       Json?
+  activatedAt    DateTime?
+  archivedAt     DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status, updatedAt])
+  @@index([userId, feedEnabled, status])
+  @@index([userId, alertsEnabled, status])
+  @@index([configHash])
+}
+
+model UserItemAction {
+  id              String             @id @default(uuid()) @db.Uuid
+  userId          String             @db.Uuid
+  actionType      UserItemActionType
+  canonicalItemId String             @db.Uuid
+  itemVariantId   String             @db.Uuid
+  sourceId        String?            @db.Uuid
+  scopeKey        String             @default("all") @db.VarChar(64)
+  pinOrder        Int?
+  expiresAt       DateTime?
+  note            String?            @db.Text
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  user            User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  canonicalItem   CanonicalItem      @relation(fields: [canonicalItemId], references: [id], onDelete: Restrict)
+  itemVariant     ItemVariant        @relation(fields: [itemVariantId], references: [id], onDelete: Restrict)
+  source          Source?            @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, actionType, itemVariantId, scopeKey])
+  @@index([userId, actionType, updatedAt])
+  @@index([userId, itemVariantId])
+  @@index([userId, actionType, pinOrder])
+}
+
+model UserAlertPreference {
+  userId                  String    @id @db.Uuid
+  masterEnabled           Boolean   @default(true)
+  muteAllUntil            DateTime?
+  suppressStale           Boolean   @default(true)
+  suppressFallback        Boolean   @default(true)
+  defaultCooldownSeconds  Int       @default(3600)
+  quietHoursJson          Json?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+  user                    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model NotificationSubscription {
+  id             String               @id @default(uuid()) @db.Uuid
+  userId         String               @db.Uuid
+  channel        NotificationChannel
+  endpoint       String?              @db.VarChar(500)
+  endpointHash   String               @db.VarChar(64)
+  isActive       Boolean              @default(true)
+  isVerified     Boolean              @default(false)
+  metadataJson   Json?
+  lastVerifiedAt DateTime?
+  lastSuccessAt  DateTime?
+  lastFailureAt  DateTime?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  user           User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, channel, endpointHash])
+  @@index([userId, isActive])
+  @@index([channel, isActive])
 }
 
 model Opportunity {

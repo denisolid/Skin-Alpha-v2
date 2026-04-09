@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -14,7 +15,6 @@ import {
 } from '../../source-adapters/domain/source-adapter.types';
 import type { ScannerUniverseItemDto } from '../dto/scanner-universe.dto';
 import type {
-  GetOpportunityDetailQueryDto,
   GetOpportunityFeedQueryDto,
   OpportunityFeedSortDirection,
   OpportunityFeedSortField,
@@ -30,7 +30,9 @@ import type {
   OpportunityRejectDiagnosticDto,
   OpportunityRejectDiagnosticsPageDto,
 } from '../dto/opportunity-feed.dto';
+import { parseOpportunityKey } from '../domain/opportunity-key';
 import type { OpportunityEvaluationDto } from '../dto/opportunity-engine.dto';
+import type { CompiledScheme } from '../../schemes/domain/scheme.model';
 import { OpportunityEngineService } from './opportunity-engine.service';
 import { ScannerUniverseService } from './scanner-universe.service';
 
@@ -103,34 +105,84 @@ export class OpportunityFeedService {
     };
   }
 
-  async getOpportunityDetail(
-    itemVariantId: string,
-    query: GetOpportunityDetailQueryDto,
-  ): Promise<OpportunityDetailDto> {
-    const sourcePair = this.parseSourcePair(query.sourcePair);
-    const [item, evaluationResult] = await Promise.all([
-      this.scannerUniverseService.getScannerUniverseItem(itemVariantId),
-      this.opportunityEngineService.evaluateVariant(itemVariantId, {
-        includeRejected: false,
-        maxPairs: DEFAULT_FEED_MAX_PAIRS_PER_ITEM,
-      }),
-    ]);
-    const evaluation = evaluationResult.evaluations.find(
-      (candidate) => candidate.sourcePairKey === sourcePair.key,
-    );
+  async getFullFeedForScheme(
+    scheme: CompiledScheme,
+    query: GetOpportunityFeedQueryDto = {},
+  ): Promise<OpportunityFullFeedPageDto> {
+    const feed = await this.buildFeed(query, {
+      includeRejected: false,
+      scheme,
+    });
 
-    if (!evaluation || evaluation.disposition === 'rejected') {
+    return {
+      pageInfo: feed.pageInfo,
+      filters: feed.filters,
+      summary: feed.summary,
+      items: feed.items.map((item) => this.toFullFeedItem(item)),
+    };
+  }
+
+  async getAllFullFeedForScheme(
+    scheme: CompiledScheme,
+    query: GetOpportunityFeedQueryDto = {},
+  ): Promise<{
+    readonly generatedAt: Date;
+    readonly evaluatedVariantCount: number;
+    readonly sortBy: OpportunityPublicFeedPageDto['pageInfo']['sortBy'];
+    readonly sortDirection: OpportunityPublicFeedPageDto['pageInfo']['sortDirection'];
+    readonly filters: OpportunityFeedFiltersDto;
+    readonly items: readonly OpportunityFullFeedItemDto[];
+  }> {
+    const feed = await this.buildFeed(query, {
+      includeRejected: false,
+      scheme,
+    });
+
+    return {
+      generatedAt: feed.pageInfo.generatedAt,
+      evaluatedVariantCount: feed.pageInfo.evaluatedVariantCount,
+      sortBy: feed.pageInfo.sortBy,
+      sortDirection: feed.pageInfo.sortDirection,
+      filters: feed.filters,
+      items: feed.allItems.map((item) => this.toFullFeedItem(item)),
+    };
+  }
+
+  async getOpportunityDetail(
+    opportunityKey: string,
+  ): Promise<OpportunityDetailDto> {
+    const record = await this.resolveOpportunityRecord(opportunityKey, {
+      includeRejected: false,
+      missingBehavior: 'not_found',
+    });
+
+    if (!record || record.evaluation.disposition === 'rejected') {
       throw new NotFoundException(
-        `Opportunity detail '${itemVariantId}:${sourcePair.key}' was not found.`,
+        `Opportunity detail '${opportunityKey}' was not found.`,
       );
     }
 
-    return this.toFullFeedItem(
-      this.toFeedRecord({
-        item,
-        evaluation,
-      }),
-    );
+    return this.toFullFeedItem(record);
+  }
+
+  async getOpportunityDetailForScheme(
+    scheme: CompiledScheme,
+    opportunityKey: string,
+  ): Promise<OpportunityDetailDto> {
+    const record = await this.resolveOpportunityRecord(opportunityKey, {
+      includeRejected: true,
+      missingBehavior: 'conflict',
+      scheme,
+    });
+
+    if (
+      !record ||
+      record.evaluation.disposition === 'rejected'
+    ) {
+      throw this.createOpportunityResolutionConflict(scheme.id, opportunityKey);
+    }
+
+    return this.toFullFeedItem(record);
   }
 
   async getRejectDiagnostics(
@@ -168,6 +220,7 @@ export class OpportunityFeedService {
     query: GetOpportunityFeedQueryDto,
     options: {
       readonly includeRejected: boolean;
+      readonly scheme?: CompiledScheme;
     },
   ): Promise<{
     readonly pageInfo: OpportunityPublicFeedPageDto['pageInfo'];
@@ -176,8 +229,18 @@ export class OpportunityFeedService {
     readonly items: readonly OpportunityFeedRecord[];
     readonly allItems: readonly OpportunityFeedRecord[];
   }> {
-    const normalizedQuery = this.normalizeQuery(query);
+    const normalizedQuery = this.normalizeQuery(query, options.scheme);
+    const schemeCategory = this.resolveSingleSchemeCategory(
+      options.scheme,
+      normalizedQuery.category,
+    );
+    const schemeTier = this.resolveSingleSchemeTier(
+      options.scheme,
+      normalizedQuery.tier,
+    );
     const universe = await this.scannerUniverseService.getScannerUniverse({
+      ...(schemeCategory ? { category: schemeCategory } : {}),
+      ...(schemeTier ? { tier: schemeTier } : {}),
       ...(normalizedQuery.category
         ? { category: normalizedQuery.category }
         : {}),
@@ -185,13 +248,14 @@ export class OpportunityFeedService {
       limit: this.resolveUniverseLimit(normalizedQuery),
     });
     const filteredUniverseItems = universe.items.filter((item) =>
-      this.matchesUniverseItem(item, normalizedQuery),
+      this.matchesUniverseItem(item, normalizedQuery, options.scheme),
     );
     const evaluations = await Promise.all(
       filteredUniverseItems.map((item) =>
         this.opportunityEngineService.evaluateVariant(item.itemVariantId, {
           includeRejected: options.includeRejected,
           maxPairs: DEFAULT_FEED_MAX_PAIRS_PER_ITEM,
+          ...(options.scheme ? { scheme: options.scheme } : {}),
         }),
       ),
     );
@@ -212,7 +276,11 @@ export class OpportunityFeedService {
       );
     });
     const filteredRecords = feedRecords.filter((record) =>
-      this.matchesEvaluation(record, normalizedQuery, options.includeRejected),
+      this.matchesEvaluation(
+        record,
+        normalizedQuery,
+        options.includeRejected,
+      ),
     );
     const sortedRecords = [...filteredRecords].sort((left, right) =>
       this.compareFeedRecords(
@@ -268,6 +336,7 @@ export class OpportunityFeedService {
 
   private normalizeQuery(
     query: GetOpportunityFeedQueryDto,
+    scheme?: CompiledScheme,
   ): NormalizedFeedQuery {
     return {
       ...(query.sourcePair
@@ -283,9 +352,15 @@ export class OpportunityFeedService {
         : {}),
       ...(query.tier ? { tier: query.tier } : {}),
       page: query.page ?? DEFAULT_FEED_PAGE,
-      pageSize: query.pageSize ?? DEFAULT_FEED_PAGE_SIZE,
-      sortBy: query.sortBy ?? DEFAULT_FEED_SORT_BY,
-      sortDirection: query.sortDirection ?? DEFAULT_FEED_SORT_DIRECTION,
+      pageSize: query.pageSize ?? scheme?.view.defaultPageSize ?? DEFAULT_FEED_PAGE_SIZE,
+      sortBy:
+        query.sortBy ??
+        scheme?.view.defaultSortBy ??
+        DEFAULT_FEED_SORT_BY,
+      sortDirection:
+        query.sortDirection ??
+        scheme?.view.defaultSortDirection ??
+        DEFAULT_FEED_SORT_DIRECTION,
     };
   }
 
@@ -317,7 +392,35 @@ export class OpportunityFeedService {
   private matchesUniverseItem(
     item: ScannerUniverseItemDto,
     query: NormalizedFeedQuery,
+    scheme?: CompiledScheme,
   ): boolean {
+    if (scheme) {
+      if (
+        scheme.scope.categories.length > 0 &&
+        !scheme.scope.categories.includes(item.category)
+      ) {
+        return false;
+      }
+
+      if (scheme.scope.tiers.length > 0 && !scheme.scope.tiers.includes(item.tier)) {
+        return false;
+      }
+
+      if (
+        scheme.scope.itemTypes.length > 0 &&
+        !scheme.scope.itemTypes.includes(this.normalizeItemType(item.itemType))
+      ) {
+        return false;
+      }
+
+      if (
+        scheme.scope.itemVariantIds.length > 0 &&
+        !scheme.scope.itemVariantIds.includes(item.itemVariantId)
+      ) {
+        return false;
+      }
+    }
+
     if (
       query.itemType &&
       this.normalizeItemType(item.itemType) !== query.itemType
@@ -380,6 +483,58 @@ export class OpportunityFeedService {
     return true;
   }
 
+  private async resolveOpportunityRecord(
+    opportunityKey: string,
+    options: {
+      readonly includeRejected: boolean;
+      readonly missingBehavior: 'not_found' | 'conflict';
+      readonly scheme?: CompiledScheme;
+    },
+  ): Promise<OpportunityFeedRecord | null> {
+    const parts = parseOpportunityKey(opportunityKey);
+
+    if (!parts) {
+      throw new BadRequestException(
+        `Invalid opportunityKey '${opportunityKey}'.`,
+      );
+    }
+
+    try {
+      const [item, evaluationResult] = await Promise.all([
+        this.scannerUniverseService.getScannerUniverseItem(parts.itemVariantId),
+        this.opportunityEngineService.evaluateVariant(parts.itemVariantId, {
+          includeRejected: options.includeRejected,
+          maxPairs: DEFAULT_FEED_MAX_PAIRS_PER_ITEM,
+          ...(options.scheme ? { scheme: options.scheme } : {}),
+        }),
+      ]);
+      const evaluation = evaluationResult.evaluations.find(
+        (candidate) => candidate.opportunityKey === opportunityKey,
+      );
+
+      if (!evaluation) {
+        return null;
+      }
+
+      return this.toFeedRecord({
+        item,
+        evaluation,
+      });
+    } catch (error) {
+      if (
+        options.missingBehavior === 'conflict' &&
+        error instanceof NotFoundException
+      ) {
+        throw this.createOpportunityResolutionConflict(
+          options.scheme?.id,
+          opportunityKey,
+        );
+      }
+
+      throw error;
+    }
+  }
+
   private toFeedRecord(input: {
     readonly item: ScannerUniverseItemDto;
     readonly evaluation: OpportunityEvaluationDto;
@@ -387,8 +542,8 @@ export class OpportunityFeedService {
     return {
       item: input.item,
       evaluation: input.evaluation,
-      freshness: this.computeFreshness(input.evaluation),
-      liquidity: this.computeLiquidity(input.evaluation),
+      freshness: input.evaluation.rankingInputs.freshnessScore,
+      liquidity: input.evaluation.rankingInputs.liquidityScore,
       observedAt: new Date(
         Math.min(
           input.evaluation.buy.observedAt.getTime(),
@@ -396,24 +551,6 @@ export class OpportunityFeedService {
         ),
       ),
     };
-  }
-
-  private computeFreshness(evaluation: OpportunityEvaluationDto): number {
-    return this.clampScore(
-      1 -
-        evaluation.penalties.freshnessPenalty -
-        evaluation.penalties.stalePenalty,
-    );
-  }
-
-  private computeLiquidity(evaluation: OpportunityEvaluationDto): number {
-    const buyListedQty = evaluation.buy.listedQty ?? 0;
-    const sellListedQty = evaluation.sell.listedQty ?? 0;
-    const depthSignal = Math.min(1, Math.min(buyListedQty, sellListedQty) / 12);
-
-    return this.clampScore(
-      1 - evaluation.penalties.liquidityPenalty * 0.9 + depthSignal * 0.1,
-    );
   }
 
   private compareFeedRecords(
@@ -441,8 +578,18 @@ export class OpportunityFeedService {
       return right.evaluation.finalConfidence - left.evaluation.finalConfidence;
     }
 
-    return left.evaluation.sourcePairKey.localeCompare(
-      right.evaluation.sourcePairKey,
+    if (
+      right.evaluation.rankingInputs.rankScore !==
+      left.evaluation.rankingInputs.rankScore
+    ) {
+      return (
+        right.evaluation.rankingInputs.rankScore -
+        left.evaluation.rankingInputs.rankScore
+      );
+    }
+
+    return left.evaluation.opportunityKey.localeCompare(
+      right.evaluation.opportunityKey,
     );
   }
 
@@ -471,6 +618,7 @@ export class OpportunityFeedService {
     record: OpportunityFeedRecord,
   ): OpportunityPublicFeedItemDto {
     return {
+      opportunityKey: record.evaluation.opportunityKey,
       disposition: record.evaluation.disposition,
       riskClass: record.evaluation.riskClass,
       category: record.evaluation.category,
@@ -507,6 +655,10 @@ export class OpportunityFeedService {
       sellSignalPrice: record.evaluation.sellSignalPrice,
       buy: record.evaluation.buy,
       sell: record.evaluation.sell,
+      validation: record.evaluation.validation,
+      pairability: record.evaluation.pairability,
+      explainability: record.evaluation.explainability,
+      rankingInputs: record.evaluation.rankingInputs,
       ...(record.evaluation.backupConfirmation
         ? { backupConfirmation: record.evaluation.backupConfirmation }
         : {}),
@@ -573,8 +725,28 @@ export class OpportunityFeedService {
     return itemType.trim().toLowerCase().replace(/\s+/g, ' ');
   }
 
-  private clampScore(value: number): number {
-    return Number(Math.max(0, Math.min(1, value)).toFixed(4));
+  private resolveSingleSchemeCategory(
+    scheme: CompiledScheme | undefined,
+    queryCategory: GetOpportunityFeedQueryDto['category'] | undefined,
+  ): GetOpportunityFeedQueryDto['category'] | undefined {
+    if (queryCategory !== undefined) {
+      return undefined;
+    }
+
+    return scheme?.scope.categories.length === 1
+      ? scheme.scope.categories[0]
+      : undefined;
+  }
+
+  private resolveSingleSchemeTier(
+    scheme: CompiledScheme | undefined,
+    queryTier: GetOpportunityFeedQueryDto['tier'] | undefined,
+  ): GetOpportunityFeedQueryDto['tier'] | undefined {
+    if (queryTier !== undefined) {
+      return undefined;
+    }
+
+    return scheme?.scope.tiers.length === 1 ? scheme.scope.tiers[0] : undefined;
   }
 
   private toTotalPages(total: number, pageSize: number): number {
@@ -587,5 +759,19 @@ export class OpportunityFeedService {
         'Administrator role is required for reject diagnostics.',
       );
     }
+  }
+
+  private createOpportunityResolutionConflict(
+    schemeId: string | undefined,
+    opportunityKey: string,
+  ): ConflictException {
+    return new ConflictException({
+      code: 'OPPORTUNITY_NO_LONGER_LIVE',
+      ...(schemeId ? { schemeId } : {}),
+      opportunityKey,
+      message: schemeId
+        ? `Opportunity '${opportunityKey}' no longer resolves for scheme '${schemeId}' from current MarketState.`
+        : `Opportunity '${opportunityKey}' no longer resolves from current MarketState.`,
+    });
   }
 }

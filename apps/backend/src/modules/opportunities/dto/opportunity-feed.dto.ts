@@ -1,8 +1,12 @@
 import type { ItemCategory } from '@prisma/client';
 
 import type {
+  OpportunityExplainabilityDto,
+  OpportunityPairabilityDto,
   OpportunityPenaltyBreakdownDto,
+  OpportunityRankingInputsDto,
   OpportunitySourceLegDto,
+  OpportunityValidationDto,
 } from './opportunity-engine.dto';
 import type {
   OpportunityFeedSortDirection,
@@ -45,6 +49,7 @@ export interface OpportunityFeedSummaryDto {
 }
 
 export interface OpportunityPublicFeedItemDto {
+  readonly opportunityKey: string;
   readonly disposition: OpportunityEvaluationDisposition;
   readonly riskClass: OpportunityEngineRiskClass;
   readonly category: ItemCategory;
@@ -76,6 +81,10 @@ export interface OpportunityFullFeedItemDto extends OpportunityPublicFeedItemDto
   readonly sellSignalPrice: number;
   readonly buy: OpportunitySourceLegDto;
   readonly sell: OpportunitySourceLegDto;
+  readonly validation: OpportunityValidationDto;
+  readonly pairability: OpportunityPairabilityDto;
+  readonly explainability: OpportunityExplainabilityDto;
+  readonly rankingInputs: OpportunityRankingInputsDto;
   readonly backupConfirmation?: {
     readonly source: SourceAdapterKey;
     readonly sourceName: string;

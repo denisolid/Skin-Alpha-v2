@@ -3,7 +3,7 @@ import { Module, type Provider } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 import type { Queue } from 'bullmq';
 
-import { MarketStateModule } from '../market-state/market-state.module';
+import { MarketStateWriteModule } from '../market-state/market-state-write.module';
 import { OpportunitiesModule } from '../opportunities/opportunities.module';
 import { SourceAdaptersModule } from '../source-adapters/source-adapters.module';
 import { JobsController } from './controllers/jobs.controller';
@@ -99,7 +99,7 @@ const jobsSchedulerProviders: Provider[] = RUNS_SCHEDULER
   imports: [
     ...jobsSchedulerImports,
     SourceAdaptersModule,
-    MarketStateModule,
+    MarketStateWriteModule,
     OpportunitiesModule,
     ...jobsQueueImports,
   ],

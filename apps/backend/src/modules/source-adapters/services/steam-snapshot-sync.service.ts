@@ -8,9 +8,9 @@ import {
 import { Inject, Injectable } from '@nestjs/common';
 
 import { AppConfigService } from '../../../infrastructure/config/app-config.service';
+import { MarketStateUpdaterService } from '../../market-state/services/market-state-updater.service';
 import { RawPayloadArchiveService } from './raw-payload-archive.service';
 import { SourceOperationsService } from './source-operations.service';
-import { MarketStateUpdaterService } from './market-state-updater.service';
 import { SteamSnapshotUniverseService } from './steam-snapshot-universe.service';
 import {
   SteamSnapshotHttpClientService,

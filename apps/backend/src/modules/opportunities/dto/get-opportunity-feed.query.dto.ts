@@ -97,9 +97,3 @@ export class GetOpportunityFeedQueryDto {
   @IsEnum(OPPORTUNITY_FEED_SORT_DIRECTIONS)
   sortDirection?: OpportunityFeedSortDirection;
 }
-
-export class GetOpportunityDetailQueryDto {
-  @IsString()
-  @Matches(/^[a-z-]+->[a-z-]+$/)
-  sourcePair!: string;
-}

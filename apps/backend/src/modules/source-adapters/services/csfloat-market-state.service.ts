@@ -3,8 +3,8 @@ import { Inject, Injectable } from '@nestjs/common';
 
 import { AppConfigService } from '../../../infrastructure/config/app-config.service';
 import { PrismaService } from '../../../infrastructure/prisma/prisma.service';
+import { MarketStateUpdaterService } from '../../market-state/services/market-state-updater.service';
 import type { NormalizedMarketStateDto } from '../dto/normalized-market-state.dto';
-import { MarketStateUpdaterService } from './market-state-updater.service';
 import { SourceRecordService } from './source-record.service';
 
 interface ReconcileAndRebuildInput {

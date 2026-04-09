@@ -48,6 +48,20 @@ export const OPPORTUNITY_REASON_CODES = [
   'INSUFFICIENT_LIQUIDITY',
   'FROZEN_MARKET',
   'NO_CONFIRMING_SOURCE',
+  'scheme_category_not_allowed',
+  'scheme_variant_not_allowed',
+  'scheme_buy_source_not_allowed',
+  'scheme_sell_source_not_allowed',
+  'scheme_source_pair_excluded',
+  'scheme_profit_below_floor',
+  'scheme_confidence_below_floor',
+  'scheme_liquidity_below_floor',
+  'scheme_buy_cost_out_of_range',
+  'scheme_disposition_below_floor',
+  'scheme_risk_above_ceiling',
+  'scheme_fallback_blocked',
+  'scheme_listed_exit_blocked',
+  'scheme_risky_high_upside_blocked',
 ] as const;
 
 export type OpportunityReasonCode = (typeof OPPORTUNITY_REASON_CODES)[number];

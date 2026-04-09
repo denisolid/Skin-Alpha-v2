@@ -1,4 +1,5 @@
 import { AppShell } from '../components/app-shell';
+import { ConsoleFeedAutoRefresh } from '../components/console-feed-auto-refresh';
 import { getCurrentUser } from '../lib/server-api';
 
 interface ConsoleLayoutProps {
@@ -8,5 +9,10 @@ interface ConsoleLayoutProps {
 export default async function ConsoleLayout({ children }: ConsoleLayoutProps) {
   const currentUser = await getCurrentUser();
 
-  return <AppShell user={currentUser}>{children}</AppShell>;
+  return (
+    <AppShell user={currentUser}>
+      <ConsoleFeedAutoRefresh />
+      {children}
+    </AppShell>
+  );
 }
