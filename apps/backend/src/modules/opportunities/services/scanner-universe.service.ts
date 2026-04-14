@@ -122,6 +122,35 @@ export class ScannerUniverseService {
     );
   }
 
+  async getScannerUniverseMap(
+    itemVariantIds: readonly string[],
+  ): Promise<ReadonlyMap<string, ScannerUniverseItemDto>> {
+    const uniqueItemVariantIds = [...new Set(itemVariantIds)];
+
+    if (uniqueItemVariantIds.length === 0) {
+      return new Map();
+    }
+
+    const [candidates, hotOverrides] = await Promise.all([
+      this.opportunitiesRepository.findScannerUniverseCandidates({
+        limit: uniqueItemVariantIds.length,
+        itemVariantIds: uniqueItemVariantIds,
+      }),
+      this.scannerUniverseAdminOverrideService.listHotOverrides(),
+    ]);
+
+    return new Map(
+      candidates.map((candidate) => [
+        candidate.itemVariantId,
+        this.scannerUniversePolicyService.evaluateCandidate(
+          candidate,
+          new Date(),
+          hotOverrides.get(candidate.itemVariantId),
+        ),
+      ]),
+    );
+  }
+
   async setHotOverride(
     itemVariantId: string,
     input: SetHotUniverseOverrideDto,

@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { JobType, type Prisma } from '@prisma/client';
 import { Inject, Injectable } from '@nestjs/common';
 
@@ -45,17 +47,18 @@ export class JobsMaintenanceDispatchService {
       externalJobId,
       ...(payload ? { payload } : {}),
     });
-    const job = await this.marketStateRebuildQueue.add(
-      MARKET_STATE_REBUILD_JOB_NAME,
-      {
+    const job = await this.enqueueMaintenanceJob({
+      queue: this.marketStateRebuildQueue,
+      queueName: MARKET_STATE_REBUILD_QUEUE_NAME,
+      jobName: MARKET_STATE_REBUILD_JOB_NAME,
+      jobRunId,
+      externalJobId,
+      data: {
         trigger: 'scheduled',
         requestedAt: input.requestedAt.toISOString(),
         externalJobId,
-      },
-      {
-        jobId: externalJobId,
-      },
-    );
+      } satisfies MarketStateRebuildJobData,
+    });
 
     return {
       jobRunId,
@@ -88,19 +91,20 @@ export class JobsMaintenanceDispatchService {
       externalJobId,
       ...(payload ? { payload } : {}),
     });
-    const job = await this.opportunityRescanQueue.add(
-      OPPORTUNITY_RESCAN_JOB_NAME,
-      {
+    const job = await this.enqueueMaintenanceJob({
+      queue: this.opportunityRescanQueue,
+      queueName: OPPORTUNITY_RESCAN_QUEUE_NAME,
+      jobName: OPPORTUNITY_RESCAN_JOB_NAME,
+      jobRunId,
+      externalJobId,
+      data: {
         trigger: 'scheduled',
         requestedAt: input.requestedAt.toISOString(),
         externalJobId,
         changedStateCount: input.changedStateCount,
         updatedHotItemCount: input.updatedHotItemCount,
-      },
-      {
-        jobId: externalJobId,
-      },
-    );
+      } satisfies OpportunityRescanJobData,
+    });
 
     return {
       jobRunId,
@@ -115,5 +119,33 @@ export class JobsMaintenanceDispatchService {
     }
 
     return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+  }
+
+  private async enqueueMaintenanceJob<TJobData>(input: {
+    readonly queue: JobsQueue<TJobData>;
+    readonly queueName: string;
+    readonly jobName: string;
+    readonly jobRunId: string;
+    readonly externalJobId: string;
+    readonly data: TJobData;
+  }) {
+    try {
+      return await input.queue.add(input.jobName, input.data, {
+        jobId: this.toBullSafeJobId(input.externalJobId),
+      });
+    } catch (error) {
+      await this.jobRunService.failJobRun({
+        jobRunId: input.jobRunId,
+        errorMessage:
+          error instanceof Error
+            ? `Failed to enqueue ${input.queueName}: ${error.message}`
+            : `Failed to enqueue ${input.queueName}.`,
+      });
+      throw error;
+    }
+  }
+
+  private toBullSafeJobId(externalJobId: string): string {
+    return `scheduled-${createHash('sha1').update(externalJobId).digest('hex')}`;
   }
 }

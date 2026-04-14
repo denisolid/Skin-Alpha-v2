@@ -1,4 +1,12 @@
-import { Controller, Get, Inject, Post, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Controller,
+  Get,
+  Inject,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 
 import type { AuthUserRecord } from '../../auth/domain/auth.repository';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
@@ -39,8 +47,12 @@ export class AdminController {
   @Post('opportunities/rescan')
   rescanOpportunities(
     @CurrentUser() user: AuthUserRecord,
+    @Query('limit') limit?: string,
   ): Promise<AdminOpportunitiesRescanResponseDto> {
-    return this.adminService.rescanOpportunities(user);
+    return this.adminService.rescanOpportunities(
+      user,
+      this.parsePositiveLimit(limit),
+    );
   }
 
   @Post('market-state/rebuild')
@@ -64,8 +76,29 @@ export class AdminController {
     return this.adminService.syncSource(user, 'csfloat');
   }
 
+  @Post('sources/sync/waxpeer')
+  syncWaxpeer(
+    @CurrentUser() user: AuthUserRecord,
+  ): Promise<SourceSyncAcceptedDto> {
+    return this.adminService.syncSource(user, 'waxpeer');
+  }
+
+  @Post('sources/sync/dmarket')
+  syncDMarket(
+    @CurrentUser() user: AuthUserRecord,
+  ): Promise<SourceSyncAcceptedDto> {
+    return this.adminService.syncSource(user, 'dmarket');
+  }
+
   @Post('sources/sync/steam')
   syncSteam(
+    @CurrentUser() user: AuthUserRecord,
+  ): Promise<SourceSyncAcceptedDto> {
+    return this.adminService.syncSource(user, 'steam-snapshot');
+  }
+
+  @Post('sources/sync/steam-snapshot')
+  syncSteamSnapshot(
     @CurrentUser() user: AuthUserRecord,
   ): Promise<SourceSyncAcceptedDto> {
     return this.adminService.syncSource(user, 'steam-snapshot');
@@ -111,5 +144,21 @@ export class AdminController {
     @CurrentUser() user: AuthUserRecord,
   ): Promise<ScannerUniverseListDto> {
     return this.adminService.rebuildScannerUniverse(user);
+  }
+
+  private parsePositiveLimit(value: string | undefined): number | undefined {
+    if (!value) {
+      return undefined;
+    }
+
+    const parsed = Number.parseInt(value, 10);
+
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      throw new BadRequestException(
+        'Query parameter "limit" must be a positive integer.',
+      );
+    }
+
+    return parsed;
   }
 }

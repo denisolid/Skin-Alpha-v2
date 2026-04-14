@@ -11,14 +11,12 @@ import {
 
 interface OpportunityDetailPageProps {
   params: Promise<{
-    itemVariantId: string;
+    opportunityKey: string;
   }>;
-  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
 export default async function OpportunityDetailPage({
   params,
-  searchParams,
 }: OpportunityDetailPageProps) {
   const [currentUser, currentSubscription] = await Promise.all([
     getCurrentUser(),
@@ -33,25 +31,7 @@ export default async function OpportunityDetailPage({
     currentUser.role === 'ADMIN' ||
     Boolean(currentSubscription?.entitlements.fullFeed);
 
-  const { itemVariantId } = await params;
-  const resolvedSearchParams = await searchParams;
-  const sourcePair = readSearchParam(resolvedSearchParams, 'sourcePair');
-
-  if (!sourcePair) {
-    return (
-      <section className="panel card">
-        <h1>Missing source pair</h1>
-        <p className="panel-subtitle">
-          Opportunity detail requires a `sourcePair` query parameter.
-        </p>
-        <div className="hero-actions">
-          <Link className="button-secondary" href="/opportunities">
-            Back To Feed
-          </Link>
-        </div>
-      </section>
-    );
-  }
+  const { opportunityKey } = await params;
 
   if (!hasFullFeedAccess) {
     return (
@@ -74,8 +54,7 @@ export default async function OpportunityDetailPage({
   }
 
   const detail = await getOpportunityDetail({
-    itemVariantId,
-    sourcePair,
+    opportunityKey,
   });
 
   if (!detail) {

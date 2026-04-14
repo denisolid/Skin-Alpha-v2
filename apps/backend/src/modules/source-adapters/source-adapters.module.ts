@@ -48,6 +48,14 @@ import {
   CSFLOAT_SYNC_LISTINGS_QUEUE_NAME,
 } from './domain/csfloat.constants';
 import {
+  DMARKET_SYNC_MARKET_QUEUE,
+  DMARKET_SYNC_MARKET_QUEUE_NAME,
+} from './domain/dmarket.constants';
+import {
+  WAXPEER_SYNC_MARKET_QUEUE,
+  WAXPEER_SYNC_MARKET_QUEUE_NAME,
+} from './domain/waxpeer.constants';
+import {
   SKINPORT_INGEST_SALE_FEED_QUEUE,
   SKINPORT_INGEST_SALE_FEED_QUEUE_NAME,
   SKINPORT_SYNC_ITEMS_QUEUE,
@@ -60,9 +68,11 @@ import type {
   CsFloatListingDetailJobData,
   CsFloatSyncJobData,
 } from './dto/csfloat-sync.job.dto';
+import type { DMarketSyncJobData } from './dto/dmarket-sync.job.dto';
 import type { NormalizeSourcePayloadJobData } from './dto/normalize-source-payload.job.dto';
 import type { SteamSnapshotSyncJobData } from './dto/steam-snapshot.job.dto';
 import type { UpdateMarketStateJobData } from './dto/update-market-state.job.dto';
+import type { WaxpeerSyncJobData } from './dto/waxpeer-sync.job.dto';
 import type {
   SkinportSaleFeedJobData,
   SkinportSyncJobData,
@@ -72,8 +82,10 @@ import { BackupAggregatorSourceAdapter } from './infrastructure/adapters/backup-
 import { C5GameSourceAdapter } from './infrastructure/adapters/c5game-source.adapter';
 import { CSMoneySourceAdapter } from './infrastructure/adapters/csmoney-source.adapter';
 import { CsFloatSourceAdapter } from './infrastructure/adapters/csfloat-source.adapter';
+import { DMarketSourceAdapter } from './infrastructure/adapters/dmarket-source.adapter';
 import { SkinportSourceAdapter } from './infrastructure/adapters/skinport-source.adapter';
 import { SteamSnapshotSourceAdapter } from './infrastructure/adapters/steam-snapshot-source.adapter';
+import { WaxpeerSourceAdapter } from './infrastructure/adapters/waxpeer-source.adapter';
 import { YouPinSourceAdapter } from './infrastructure/adapters/youpin-source.adapter';
 import { Cs2ShBackupProvider } from './infrastructure/providers/cs2sh-backup.provider';
 import { ArchiveRawPayloadProcessor } from './infrastructure/processors/archive-raw-payload.processor';
@@ -83,30 +95,53 @@ import { C5GameSyncProcessor } from './infrastructure/processors/c5game-sync.pro
 import { CSMoneySyncProcessor } from './infrastructure/processors/csmoney-sync.processor';
 import { CsFloatFetchListingDetailProcessor } from './infrastructure/processors/csfloat-fetch-listing-detail.processor';
 import { CsFloatSyncListingsProcessor } from './infrastructure/processors/csfloat-sync-listings.processor';
+import { DMarketSyncMarketProcessor } from './infrastructure/processors/dmarket-sync-market.processor';
 import { NormalizeSourcePayloadProcessor } from './infrastructure/processors/normalize-source-payload.processor';
 import { SkinportIngestSaleFeedProcessor } from './infrastructure/processors/skinport-ingest-sale-feed.processor';
 import { SkinportSyncItemsProcessor } from './infrastructure/processors/skinport-sync-items.processor';
 import { SkinportSyncSalesHistoryProcessor } from './infrastructure/processors/skinport-sync-sales-history.processor';
 import { SteamSnapshotSyncProcessor } from './infrastructure/processors/steam-snapshot-sync.processor';
 import { UpdateMarketStateProcessor } from './infrastructure/processors/update-market-state.processor';
+import { WaxpeerSyncMarketProcessor } from './infrastructure/processors/waxpeer-sync-market.processor';
 import { YouPinSyncProcessor } from './infrastructure/processors/youpin-sync.processor';
 import { NoopSourceJobQueue } from './infrastructure/queues/noop-source-job.queue';
 import { SourceAdapterRegistry } from './infrastructure/registry/source-adapter.registry';
 import { DefaultSourceSchedulerService } from './infrastructure/scheduler/default-source-scheduler.service';
 import { RawPayloadArchiveService } from './services/raw-payload-archive.service';
 import { SourceAdaptersService } from './services/source-adapters.service';
+import { SourceCursorService } from './services/source-cursor.service';
+import { SourceDeadLetterService } from './services/source-dead-letter.service';
+import { SourceFailureClassifierService } from './services/source-failure-classifier.service';
+import { SourceFetchJobService } from './services/source-fetch-job.service';
+import { SourceFreshnessService } from './services/source-freshness.service';
 import { SourceIngestionService } from './services/source-ingestion.service';
 import { SourceListingStorageService } from './services/source-listing-storage.service';
+import { SourceMarketFactStorageService } from './services/source-market-fact-storage.service';
 import { SourceOperationsService } from './services/source-operations.service';
+import { SourceOperationalProfileService } from './services/source-operational-profile.service';
+import { SourceProxyOrchestratorService } from './services/source-proxy-orchestrator.service';
+import { SourceSessionAccountRegistryService } from './services/source-session-account-registry.service';
+import { SourceRuntimeGuardService } from './services/source-runtime-guard.service';
+import { SourceHealthRecoveryService } from './services/source-health-recovery.service';
+import { SourceOverlapScoringService } from './services/source-overlap-scoring.service';
+import { SourceAntiBanSchedulerService } from './services/source-anti-ban-scheduler.service';
 import { SourcePayloadNormalizationService } from './services/source-payload-normalization.service';
+import { SourceProvenanceService } from './services/source-provenance.service';
 import { SourceRecordService } from './services/source-record.service';
 import { SourceAdapterDirectoryService } from './services/source-adapter-directory.service';
 import { SourceSyncDispatchService } from './services/source-sync-dispatch.service';
+import { PendingSourceMappingService } from './services/pending-source-mapping.service';
+import { IngestionDiagnosticsService } from './services/ingestion-diagnostics.service';
 import { BackupAggregatorNamingService } from './services/backup-aggregator-naming.service';
 import { BackupAggregatorProviderRegistry } from './services/backup-aggregator-provider.registry';
 import { BackupAggregatorRateLimitService } from './services/backup-aggregator-rate-limit.service';
 import { BackupAggregatorSyncService } from './services/backup-aggregator-sync.service';
 import { BackupAggregatorUniverseService } from './services/backup-aggregator-universe.service';
+import { BitSkinsCatalogLinkerService } from './services/bitskins-catalog-linker.service';
+import { BitSkinsHttpClientService } from './services/bitskins-http-client.service';
+import { BitSkinsMarketStateService } from './services/bitskins-market-state.service';
+import { BitSkinsPayloadNormalizerService } from './services/bitskins-payload-normalizer.service';
+import { BitSkinsSyncService } from './services/bitskins-sync.service';
 import { CsFloatCatalogLinkerService } from './services/csfloat-catalog-linker.service';
 import { CsFloatDetailPolicyService } from './services/csfloat-detail-policy.service';
 import { CsFloatHttpClientService } from './services/csfloat-http-client.service';
@@ -114,12 +149,20 @@ import { CsFloatMarketStateService } from './services/csfloat-market-state.servi
 import { CsFloatPayloadNormalizerService } from './services/csfloat-payload-normalizer.service';
 import { CsFloatRateLimitService } from './services/csfloat-rate-limit.service';
 import { CsFloatSyncService } from './services/csfloat-sync.service';
+import { DMarketCatalogLinkerService } from './services/dmarket-catalog-linker.service';
+import { DMarketHttpClientService } from './services/dmarket-http-client.service';
+import { DMarketMarketStateService } from './services/dmarket-market-state.service';
+import { DMarketPayloadNormalizerService } from './services/dmarket-payload-normalizer.service';
+import { DMarketRateLimitService } from './services/dmarket-rate-limit.service';
+import { DMarketSignerService } from './services/dmarket-signer.service';
+import { DMarketSyncService } from './services/dmarket-sync.service';
 import { ManagedMarketHttpClientService } from './services/managed-market-http-client.service';
 import { ManagedMarketNamingService } from './services/managed-market-naming.service';
 import { ManagedMarketPayloadNormalizerService } from './services/managed-market-payload-normalizer.service';
 import { ManagedMarketSourceDefinitionsService } from './services/managed-market-source-definitions.service';
 import { ManagedMarketSourceRuntimeService } from './services/managed-market-source-runtime.service';
 import { ManagedMarketSyncService } from './services/managed-market-sync.service';
+import { NormalizedMarketStateDeltaService } from './services/normalized-market-state-delta.service';
 import { OverlapAwareSourceUniverseService } from './services/overlap-aware-source-universe.service';
 import { SkinportCatalogLinkerService } from './services/skinport-catalog-linker.service';
 import { SkinportHttpClientService } from './services/skinport-http-client.service';
@@ -134,6 +177,12 @@ import { SteamSnapshotPayloadNormalizerService } from './services/steam-snapshot
 import { SteamSnapshotRateLimitService } from './services/steam-snapshot-rate-limit.service';
 import { SteamSnapshotSyncService } from './services/steam-snapshot-sync.service';
 import { SteamSnapshotUniverseService } from './services/steam-snapshot-universe.service';
+import { WaxpeerCatalogLinkerService } from './services/waxpeer-catalog-linker.service';
+import { WaxpeerHttpClientService } from './services/waxpeer-http-client.service';
+import { WaxpeerMarketStateService } from './services/waxpeer-market-state.service';
+import { WaxpeerPayloadNormalizerService } from './services/waxpeer-payload-normalizer.service';
+import { WaxpeerRateLimitService } from './services/waxpeer-rate-limit.service';
+import { WaxpeerSyncService } from './services/waxpeer-sync.service';
 import {
   IS_TEST_ENVIRONMENT,
   RUNS_BACKGROUND_PROCESSORS,
@@ -201,6 +250,22 @@ const sourceIngestionQueueImports = IS_TEST_ENVIRONMENT
         },
         {
           name: CSFLOAT_FETCH_LISTING_DETAIL_QUEUE_NAME,
+          defaultJobOptions: {
+            attempts: 3,
+            removeOnComplete: 100,
+            removeOnFail: 500,
+          },
+        },
+        {
+          name: DMARKET_SYNC_MARKET_QUEUE_NAME,
+          defaultJobOptions: {
+            attempts: 3,
+            removeOnComplete: 100,
+            removeOnFail: 500,
+          },
+        },
+        {
+          name: WAXPEER_SYNC_MARKET_QUEUE_NAME,
           defaultJobOptions: {
             attempts: 3,
             removeOnComplete: 100,
@@ -301,6 +366,16 @@ const sourceIngestionQueueProviders: Provider[] = IS_TEST_ENVIRONMENT
           new NoopSourceJobQueue<CsFloatListingDetailJobData>(),
       },
       {
+        provide: DMARKET_SYNC_MARKET_QUEUE,
+        useFactory: (): SourceJobQueue<DMarketSyncJobData> =>
+          new NoopSourceJobQueue<DMarketSyncJobData>(),
+      },
+      {
+        provide: WAXPEER_SYNC_MARKET_QUEUE,
+        useFactory: (): SourceJobQueue<WaxpeerSyncJobData> =>
+          new NoopSourceJobQueue<WaxpeerSyncJobData>(),
+      },
+      {
         provide: STEAM_SNAPSHOT_SYNC_QUEUE,
         useFactory: (): SourceJobQueue<SteamSnapshotSyncJobData> =>
           new NoopSourceJobQueue<SteamSnapshotSyncJobData>(),
@@ -389,6 +464,20 @@ const sourceIngestionQueueProviders: Provider[] = IS_TEST_ENVIRONMENT
         ): SourceJobQueue<CsFloatListingDetailJobData> => queue,
       },
       {
+        provide: DMARKET_SYNC_MARKET_QUEUE,
+        inject: [getQueueToken(DMARKET_SYNC_MARKET_QUEUE_NAME)],
+        useFactory: (
+          queue: Queue<DMarketSyncJobData>,
+        ): SourceJobQueue<DMarketSyncJobData> => queue,
+      },
+      {
+        provide: WAXPEER_SYNC_MARKET_QUEUE,
+        inject: [getQueueToken(WAXPEER_SYNC_MARKET_QUEUE_NAME)],
+        useFactory: (
+          queue: Queue<WaxpeerSyncJobData>,
+        ): SourceJobQueue<WaxpeerSyncJobData> => queue,
+      },
+      {
         provide: STEAM_SNAPSHOT_SYNC_QUEUE,
         inject: [getQueueToken(STEAM_SNAPSHOT_SYNC_QUEUE_NAME)],
         useFactory: (
@@ -442,6 +531,8 @@ const sourceIngestionWorkerProviders: Provider[] = RUNS_BACKGROUND_PROCESSORS
       SkinportIngestSaleFeedProcessor,
       CsFloatSyncListingsProcessor,
       CsFloatFetchListingDetailProcessor,
+      DMarketSyncMarketProcessor,
+      WaxpeerSyncMarketProcessor,
       SteamSnapshotSyncProcessor,
       BackupAggregatorSyncProcessor,
       YouPinSyncProcessor,
@@ -457,6 +548,8 @@ const sourceIngestionWorkerProviders: Provider[] = RUNS_BACKGROUND_PROCESSORS
   providers: [
     SkinportSourceAdapter,
     CsFloatSourceAdapter,
+    DMarketSourceAdapter,
+    WaxpeerSourceAdapter,
     YouPinSourceAdapter,
     BitSkinsSourceAdapter,
     C5GameSourceAdapter,
@@ -472,7 +565,23 @@ const sourceIngestionWorkerProviders: Provider[] = RUNS_BACKGROUND_PROCESSORS
     RawPayloadArchiveService,
     SourcePayloadNormalizationService,
     SourceListingStorageService,
+    SourceMarketFactStorageService,
+    PendingSourceMappingService,
+    SourceProvenanceService,
+    SourceFreshnessService,
     SourceOperationsService,
+    SourceOperationalProfileService,
+    SourceProxyOrchestratorService,
+    SourceSessionAccountRegistryService,
+    SourceRuntimeGuardService,
+    SourceHealthRecoveryService,
+    SourceOverlapScoringService,
+    SourceAntiBanSchedulerService,
+    SourceFetchJobService,
+    SourceCursorService,
+    SourceFailureClassifierService,
+    SourceDeadLetterService,
+    IngestionDiagnosticsService,
     BackupAggregatorNamingService,
     BackupAggregatorRateLimitService,
     BackupAggregatorProviderRegistry,
@@ -486,6 +595,24 @@ const sourceIngestionWorkerProviders: Provider[] = RUNS_BACKGROUND_PROCESSORS
     CsFloatDetailPolicyService,
     CsFloatMarketStateService,
     CsFloatSyncService,
+    DMarketSignerService,
+    DMarketRateLimitService,
+    DMarketHttpClientService,
+    DMarketCatalogLinkerService,
+    DMarketPayloadNormalizerService,
+    DMarketMarketStateService,
+    DMarketSyncService,
+    BitSkinsHttpClientService,
+    BitSkinsCatalogLinkerService,
+    BitSkinsPayloadNormalizerService,
+    BitSkinsMarketStateService,
+    BitSkinsSyncService,
+    WaxpeerRateLimitService,
+    WaxpeerHttpClientService,
+    WaxpeerCatalogLinkerService,
+    WaxpeerPayloadNormalizerService,
+    WaxpeerMarketStateService,
+    WaxpeerSyncService,
     ManagedMarketSourceDefinitionsService,
     ManagedMarketSourceRuntimeService,
     ManagedMarketHttpClientService,
@@ -493,6 +620,7 @@ const sourceIngestionWorkerProviders: Provider[] = RUNS_BACKGROUND_PROCESSORS
     ManagedMarketNamingService,
     OverlapAwareSourceUniverseService,
     ManagedMarketSyncService,
+    NormalizedMarketStateDeltaService,
     SkinportRateLimitService,
     SkinportHttpClientService,
     SkinportCatalogLinkerService,
@@ -521,6 +649,8 @@ const sourceIngestionWorkerProviders: Provider[] = RUNS_BACKGROUND_PROCESSORS
       inject: [
         SkinportSourceAdapter,
         CsFloatSourceAdapter,
+        DMarketSourceAdapter,
+        WaxpeerSourceAdapter,
         YouPinSourceAdapter,
         BitSkinsSourceAdapter,
         C5GameSourceAdapter,
@@ -531,6 +661,8 @@ const sourceIngestionWorkerProviders: Provider[] = RUNS_BACKGROUND_PROCESSORS
       useFactory: (
         skinport: SkinportSourceAdapter,
         csfloat: CsFloatSourceAdapter,
+        dmarket: DMarketSourceAdapter,
+        waxpeer: WaxpeerSourceAdapter,
         youpin: YouPinSourceAdapter,
         bitskins: BitSkinsSourceAdapter,
         c5game: C5GameSourceAdapter,
@@ -540,6 +672,8 @@ const sourceIngestionWorkerProviders: Provider[] = RUNS_BACKGROUND_PROCESSORS
       ): readonly SourceAdapter[] => [
         skinport,
         csfloat,
+        dmarket,
+        waxpeer,
         youpin,
         bitskins,
         c5game,
@@ -561,6 +695,16 @@ const sourceIngestionWorkerProviders: Provider[] = RUNS_BACKGROUND_PROCESSORS
     SourceIngestionService,
     RawPayloadArchiveService,
     SourceOperationsService,
+    SourceOperationalProfileService,
+    SourceProxyOrchestratorService,
+    SourceSessionAccountRegistryService,
+    SourceRuntimeGuardService,
+    SourceHealthRecoveryService,
+    SourceOverlapScoringService,
+    SourceAntiBanSchedulerService,
+    SourceFetchJobService,
+    SourceCursorService,
+    SourceFreshnessService,
   ],
 })
 export class SourceAdaptersModule {}

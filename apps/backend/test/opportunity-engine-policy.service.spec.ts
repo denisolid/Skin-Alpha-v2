@@ -10,6 +10,7 @@ describe('OpportunityEnginePolicyService', () => {
       category: ItemCategory.SKIN,
       expectedNetProfit: 12.4,
       rawSpreadPercent: 8.1,
+      postFeeEdgeStatus: 'positive',
       finalConfidence: 0.27,
       antiFakeAssessment: {
         hardReject: false,
@@ -43,6 +44,7 @@ describe('OpportunityEnginePolicyService', () => {
       category: ItemCategory.SKIN,
       expectedNetProfit: 12.4,
       rawSpreadPercent: 8.1,
+      postFeeEdgeStatus: 'positive',
       finalConfidence: 0.08,
       antiFakeAssessment: {
         hardReject: false,
@@ -76,6 +78,7 @@ describe('OpportunityEnginePolicyService', () => {
       category: ItemCategory.KNIFE,
       expectedNetProfit: 68,
       rawSpreadPercent: 11.4,
+      postFeeEdgeStatus: 'positive',
       finalConfidence: 0.41,
       antiFakeAssessment: {
         hardReject: false,

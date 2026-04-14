@@ -202,6 +202,10 @@ export class SchemeFeedService {
     let nearEligible = 0;
     let eligible = 0;
     let riskyHighUpside = 0;
+    let tradable = 0;
+    let referenceBacked = 0;
+    let nearEligibleTier = 0;
+    let research = 0;
 
     for (const item of items) {
       switch (item.disposition) {
@@ -220,6 +224,23 @@ export class SchemeFeedService {
         case 'rejected':
           break;
       }
+
+      switch (item.surfaceTier) {
+        case 'tradable':
+          tradable += 1;
+          break;
+        case 'reference_backed':
+          referenceBacked += 1;
+          break;
+        case 'near_eligible':
+          nearEligibleTier += 1;
+          break;
+        case 'research':
+          research += 1;
+          break;
+        case 'rejected':
+          break;
+      }
     }
 
     return {
@@ -227,6 +248,10 @@ export class SchemeFeedService {
       nearEligible,
       eligible,
       riskyHighUpside,
+      tradable,
+      referenceBacked,
+      nearEligibleTier,
+      research,
     };
   }
 }

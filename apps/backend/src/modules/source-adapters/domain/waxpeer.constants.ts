@@ -1,0 +1,7 @@
+export const WAXPEER_SYNC_MARKET_QUEUE_NAME = 'waxpeer-sync-market';
+export const WAXPEER_SYNC_MARKET_JOB_NAME = WAXPEER_SYNC_MARKET_QUEUE_NAME;
+
+export const WAXPEER_SYNC_MARKET_QUEUE = Symbol('WAXPEER_SYNC_MARKET_QUEUE');
+
+export const WAXPEER_MASS_INFO_ENDPOINT_NAME = 'waxpeer-mass-info';
+export const WAXPEER_MAX_NAMES_PER_REQUEST = 50;

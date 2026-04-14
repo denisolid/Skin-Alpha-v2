@@ -53,6 +53,7 @@ describe('OpportunityAntiFakeService', () => {
 
   it('adds premium contamination risk for float and sticker asymmetry', () => {
     const matrix = createMatrix(ItemCategory.SKIN, {
+      marketHashName: 'AK-47 | Case Hardened (Field-Tested)',
       mappingConfidence: 0.8,
       floatRelevant: true,
       patternRelevant: true,
@@ -151,6 +152,48 @@ describe('OpportunityAntiFakeService', () => {
     expect(counters.rejectedByMismatch).toBe(1);
     expect(counters.rejectedByPremiumContamination).toBe(1);
     expect(counters.downgradedToRiskyHighUpside).toBe(1);
+  });
+
+  it('does not treat non-doppler emerald skin names as phase mismatches', () => {
+    const matrix = createMatrix(ItemCategory.SKIN, {
+      marketHashName: 'AUG | Emerald Jormungandr (Factory New)',
+      exterior: 'Factory New',
+      mappingConfidence: 0.91,
+    });
+    const buyRow = createRow('skinport', {
+      ask: 420,
+      listedQty: 4,
+      identity: {
+        title: 'AUG | Emerald Jormungandr (Factory New)',
+        condition: 'Factory New',
+        isStatTrak: false,
+        isSouvenir: false,
+      },
+    });
+    const sellRow = createRow('waxpeer', {
+      ask: 455,
+      listedQty: 2,
+      identity: {
+        title: 'AUG | Emerald Jormungandr (Factory New)',
+        condition: 'Factory New',
+        isStatTrak: false,
+        isSouvenir: false,
+      },
+    });
+
+    const assessment = service.assess({
+      matrix: {
+        ...matrix,
+        rows: [buyRow, sellRow],
+      },
+      buyRow,
+      sellRow,
+      backupRows: [],
+      buyCost: 420,
+      sellSignalPrice: 455,
+    });
+
+    expect(assessment.reasonCodes).not.toContain('MISMATCH_PHASE');
   });
 });
 

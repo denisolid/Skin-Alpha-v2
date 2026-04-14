@@ -16,10 +16,6 @@ export class CsFloatDetailPolicyService {
       return 'missing-seed';
     }
 
-    if (!listing.item.stickers) {
-      return 'missing-stickers';
-    }
-
     return null;
   }
 }

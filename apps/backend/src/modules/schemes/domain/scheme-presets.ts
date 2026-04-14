@@ -45,6 +45,7 @@ export const SCHEME_PRESETS: readonly SchemePresetDefinition[] = [
       buySources: [
         'skinport',
         'csfloat',
+        'waxpeer',
         'bitskins',
         'youpin',
         'c5game',
@@ -54,6 +55,7 @@ export const SCHEME_PRESETS: readonly SchemePresetDefinition[] = [
       sellSources: [
         'skinport',
         'csfloat',
+        'waxpeer',
         'bitskins',
         'youpin',
         'c5game',
@@ -106,6 +108,7 @@ export const SCHEME_PRESETS: readonly SchemePresetDefinition[] = [
       buySources: [
         'skinport',
         'csfloat',
+        'waxpeer',
         'bitskins',
         'youpin',
         'c5game',
@@ -113,6 +116,7 @@ export const SCHEME_PRESETS: readonly SchemePresetDefinition[] = [
       sellSources: [
         'skinport',
         'csfloat',
+        'waxpeer',
         'bitskins',
         'youpin',
         'c5game',

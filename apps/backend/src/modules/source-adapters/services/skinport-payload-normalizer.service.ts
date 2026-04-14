@@ -1,6 +1,12 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 
 import { AppLoggerService } from '../../../infrastructure/logging/app-logger.service';
+import { CatalogAliasNormalizationService } from '../../catalog/services/catalog-alias-normalization.service';
+import type { CatalogResolutionDto } from '../../catalog/dto/catalog-resolution.dto';
+import {
+  chunkArray,
+  mapWithConcurrencyLimit,
+} from '../../shared/utils/async.util';
 import type { ArchivedRawPayloadDto } from '../dto/archived-raw-payload.dto';
 import type { NormalizedMarketListingDto } from '../dto/normalized-market-listing.dto';
 import type { NormalizedMarketStateDto } from '../dto/normalized-market-state.dto';
@@ -8,12 +14,29 @@ import type { NormalizedSourcePayloadDto } from '../dto/normalized-source-payloa
 import type { SkinportItemSnapshotDto } from '../dto/skinport-item-snapshot.dto';
 import type { SkinportSaleFeedEventDto } from '../dto/skinport-sale-feed-event.dto';
 import type { SkinportSalesHistoryDto } from '../dto/skinport-sales-history.dto';
+import type {
+  ResolveSkinportListingInput,
+  SkinportCatalogBatchResolutionStats,
+  SkinportCatalogLinkerRunContext,
+} from './skinport-catalog-linker.service';
 import { SkinportCatalogLinkerService } from './skinport-catalog-linker.service';
 
 interface SkinportFilterBucket {
   count: number;
   sampleNames: string[];
 }
+
+interface SkinportSnapshotChunkResult {
+  readonly listings: readonly NormalizedMarketListingDto[];
+  readonly marketStates: readonly NormalizedMarketStateDto[];
+  readonly warnings: readonly string[];
+  readonly filterBuckets: ReadonlyMap<string, SkinportFilterBucket>;
+  readonly batchStats: SkinportCatalogBatchResolutionStats;
+  readonly durationMs: number;
+}
+
+const SKINPORT_SNAPSHOT_CHUNK_SIZE = 500;
+const SKINPORT_SNAPSHOT_DB_CONCURRENCY = 1;
 
 @Injectable()
 export class SkinportPayloadNormalizerService {
@@ -22,6 +45,9 @@ export class SkinportPayloadNormalizerService {
     private readonly logger: AppLoggerService,
     @Inject(SkinportCatalogLinkerService)
     private readonly skinportCatalogLinkerService: SkinportCatalogLinkerService,
+    @Optional()
+    @Inject(CatalogAliasNormalizationService)
+    private readonly aliasNormalizationService: CatalogAliasNormalizationService = new CatalogAliasNormalizationService(),
   ) {}
 
   async normalize(
@@ -57,101 +83,51 @@ export class SkinportPayloadNormalizerService {
     const payload = Array.isArray(archive.payload)
       ? (archive.payload as SkinportItemSnapshotDto[])
       : [];
-    const listings: NormalizedMarketListingDto[] = [];
-    const marketStates: NormalizedMarketStateDto[] = [];
-    const warnings: string[] = [];
+    const runContext = this.skinportCatalogLinkerService.createRunContext();
+    const itemChunks = chunkArray(payload, SKINPORT_SNAPSHOT_CHUNK_SIZE);
+    const chunkResults = await mapWithConcurrencyLimit(
+      itemChunks,
+      SKINPORT_SNAPSHOT_DB_CONCURRENCY,
+      async (chunk, chunkIndex) =>
+        this.normalizeItemSnapshotChunk({
+          archive,
+          chunk,
+          chunkIndex,
+          chunkCount: itemChunks.length,
+          runContext,
+        }),
+    );
+    const listings = chunkResults.flatMap((result) => [...result.listings]);
+    const marketStates = chunkResults.flatMap((result) => [...result.marketStates]);
+    const warnings = chunkResults.flatMap((result) => [...result.warnings]);
     const filterBuckets = new Map<string, SkinportFilterBucket>();
+    const aggregateBatchStats = {
+      batchSize: 0,
+      uniqueListingKeys: 0,
+      cacheHits: 0,
+      resolvedCount: 0,
+      unresolvedCount: 0,
+      createdCount: 0,
+      reusedCount: 0,
+      updatedCount: 0,
+    } satisfies SkinportCatalogBatchResolutionStats;
 
-    for (const item of payload) {
-      const linkedItem =
-        await this.skinportCatalogLinkerService.resolveOrCreate(
-          item.market_hash_name,
-        );
-
-      if (
-        linkedItem.status !== 'resolved' ||
-        !linkedItem.canonicalItemId ||
-        !linkedItem.itemVariantId
-      ) {
-        this.recordFilterReason(
-          filterBuckets,
-          'unresolved_catalog',
-          item.market_hash_name,
-        );
-        warnings.push(
-          this.buildUnresolvedWarning(item.market_hash_name, linkedItem),
-        );
-        continue;
-      }
-
-      if (item.quantity <= 0) {
-        this.recordFilterReason(
-          filterBuckets,
-          'non_positive_quantity',
-          item.market_hash_name,
-        );
-      } else if (item.min_price === null) {
-        this.recordFilterReason(
-          filterBuckets,
-          'missing_min_price',
-          item.market_hash_name,
-        );
-      } else {
-        listings.push({
-          source: archive.source,
-          externalListingId: `skinport:items:${item.market_hash_name}`,
-          sourceItemId: item.market_hash_name,
-          canonicalItemId: linkedItem.canonicalItemId,
-          itemVariantId: linkedItem.itemVariantId,
-          title: item.market_hash_name,
-          observedAt: archive.observedAt,
-          currency: item.currency,
-          listingUrl: item.market_page,
-          priceMinor: this.priceToMinor(
-            item.min_price ?? item.suggested_price ?? 0,
-          ),
-          quantityAvailable: item.quantity,
-          isStatTrak: linkedItem.mapping.stattrak,
-          isSouvenir: linkedItem.mapping.souvenir,
-          metadata: {
-            itemPage: item.item_page,
-            marketPage: item.market_page,
-            minPrice: item.min_price,
-            maxPrice: item.max_price,
-            meanPrice: item.mean_price,
-            suggestedPrice: item.suggested_price,
-          },
-        });
-      }
-
-      marketStates.push({
-        source: archive.source,
-        canonicalItemId: linkedItem.canonicalItemId,
-        itemVariantId: linkedItem.itemVariantId,
-        capturedAt: archive.observedAt,
-        currency: item.currency,
-        listingCount: item.quantity,
-        confidence: this.deriveSnapshotConfidence(
-          item.quantity,
-          item.min_price !== null,
-        ),
-        liquidityScore: this.deriveLiquidityScore(item.quantity),
-        metadata: {
-          itemPage: item.item_page,
-          marketPage: item.market_page,
-          updatedAt: item.updated_at,
-        },
-        ...(item.min_price !== null
-          ? { lowestAskMinor: this.priceToMinor(item.min_price) }
-          : {}),
-        ...(item.median_price !== null
-          ? { medianAskMinor: this.priceToMinor(item.median_price) }
-          : {}),
-      });
+    for (const chunkResult of chunkResults) {
+      this.mergeFilterBuckets(filterBuckets, chunkResult.filterBuckets);
+      aggregateBatchStats.batchSize += chunkResult.batchStats.batchSize;
+      aggregateBatchStats.uniqueListingKeys +=
+        chunkResult.batchStats.uniqueListingKeys;
+      aggregateBatchStats.cacheHits += chunkResult.batchStats.cacheHits;
+      aggregateBatchStats.resolvedCount += chunkResult.batchStats.resolvedCount;
+      aggregateBatchStats.unresolvedCount +=
+        chunkResult.batchStats.unresolvedCount;
+      aggregateBatchStats.createdCount += chunkResult.batchStats.createdCount;
+      aggregateBatchStats.reusedCount += chunkResult.batchStats.reusedCount;
+      aggregateBatchStats.updatedCount += chunkResult.batchStats.updatedCount;
     }
 
     this.logger.log(
-      `Skinport ${archive.endpointName} (${archive.id}) extracted ${listings.length} listings, filtered ${payload.length - listings.length} listing candidates, and produced ${marketStates.length} market states. Filter reasons: ${JSON.stringify(this.serializeFilterBuckets(filterBuckets))}.`,
+      `Skinport ${archive.endpointName} (${archive.id}) extracted ${listings.length} listings, filtered ${payload.length - listings.length} listing candidates, and produced ${marketStates.length} market states. batchSize=${aggregateBatchStats.batchSize} uniqueListingKeys=${aggregateBatchStats.uniqueListingKeys} createdCatalogMappings=${aggregateBatchStats.createdCount} reusedCatalogMappings=${aggregateBatchStats.reusedCount} updatedCatalogMappings=${aggregateBatchStats.updatedCount} unresolvedCatalogMappings=${aggregateBatchStats.unresolvedCount} cacheHits=${aggregateBatchStats.cacheHits}. Filter reasons: ${JSON.stringify(this.serializeFilterBuckets(filterBuckets))}.`,
       SkinportPayloadNormalizerService.name,
     );
 
@@ -176,13 +152,21 @@ export class SkinportPayloadNormalizerService {
     const marketStates: NormalizedMarketStateDto[] = [];
     const warnings: string[] = [];
     const filterBuckets = new Map<string, SkinportFilterBucket>();
+    const resolutionBatch =
+      await this.skinportCatalogLinkerService.resolveOrCreateMany(
+        payload.map((item) => ({
+          marketHashName: item.market_hash_name,
+          ...(item.version !== undefined ? { version: item.version } : {}),
+        })),
+        this.skinportCatalogLinkerService.createRunContext(),
+      );
 
     for (const item of payload) {
-      const linkedItem =
-        await this.skinportCatalogLinkerService.resolveOrCreate(
-          item.market_hash_name,
-          item.version,
-        );
+      const linkedItem = this.readCatalogResolution(
+        resolutionBatch.resolutions,
+        item.market_hash_name,
+        item.version,
+      );
 
       if (
         linkedItem.status !== 'resolved' ||
@@ -228,7 +212,7 @@ export class SkinportPayloadNormalizerService {
     }
 
     this.logger.log(
-      `Skinport ${archive.endpointName} (${archive.id}) produced ${marketStates.length} market states from ${payload.length} records. Filter reasons: ${JSON.stringify(this.serializeFilterBuckets(filterBuckets))}.`,
+      `Skinport ${archive.endpointName} (${archive.id}) produced ${marketStates.length} market states from ${payload.length} records. batchSize=${resolutionBatch.stats.batchSize} uniqueListingKeys=${resolutionBatch.stats.uniqueListingKeys} createdCatalogMappings=${resolutionBatch.stats.createdCount} reusedCatalogMappings=${resolutionBatch.stats.reusedCount} updatedCatalogMappings=${resolutionBatch.stats.updatedCount} unresolvedCatalogMappings=${resolutionBatch.stats.unresolvedCount}. Filter reasons: ${JSON.stringify(this.serializeFilterBuckets(filterBuckets))}.`,
       SkinportPayloadNormalizerService.name,
     );
 
@@ -269,13 +253,21 @@ export class SkinportPayloadNormalizerService {
     const listings: NormalizedMarketListingDto[] = [];
     const warnings: string[] = [];
     const filterBuckets = new Map<string, SkinportFilterBucket>();
+    const resolutionBatch =
+      await this.skinportCatalogLinkerService.resolveOrCreateMany(
+        payload.sales.map((sale) => ({
+          marketHashName: sale.marketHashName,
+          ...(sale.version !== undefined ? { version: sale.version } : {}),
+        })),
+        this.skinportCatalogLinkerService.createRunContext(),
+      );
 
     for (const sale of payload.sales) {
-      const linkedItem =
-        await this.skinportCatalogLinkerService.resolveOrCreate(
-          sale.marketHashName,
-          sale.version,
-        );
+      const linkedItem = this.readCatalogResolution(
+        resolutionBatch.resolutions,
+        sale.marketHashName,
+        sale.version,
+      );
 
       if (
         linkedItem.status !== 'resolved' ||
@@ -299,7 +291,9 @@ export class SkinportPayloadNormalizerService {
         sourceItemId: String(sale.itemId),
         canonicalItemId: linkedItem.canonicalItemId,
         itemVariantId: linkedItem.itemVariantId,
-        title: sale.marketHashName,
+        title: this.aliasNormalizationService.normalizeMarketHashName(
+          sale.marketHashName,
+        ),
         observedAt: archive.observedAt,
         currency: sale.currency,
         priceMinor: sale.salePrice,
@@ -318,7 +312,7 @@ export class SkinportPayloadNormalizerService {
       });
     }
     this.logger.log(
-      `Skinport ${archive.endpointName} (${archive.id}) extracted ${listings.length} websocket listings from ${payload.sales.length} sale-feed events. Filter reasons: ${JSON.stringify(this.serializeFilterBuckets(filterBuckets))}.`,
+      `Skinport ${archive.endpointName} (${archive.id}) extracted ${listings.length} websocket listings from ${payload.sales.length} sale-feed events. batchSize=${resolutionBatch.stats.batchSize} uniqueListingKeys=${resolutionBatch.stats.uniqueListingKeys} createdCatalogMappings=${resolutionBatch.stats.createdCount} reusedCatalogMappings=${resolutionBatch.stats.reusedCount} updatedCatalogMappings=${resolutionBatch.stats.updatedCount} unresolvedCatalogMappings=${resolutionBatch.stats.unresolvedCount}. Filter reasons: ${JSON.stringify(this.serializeFilterBuckets(filterBuckets))}.`,
       SkinportPayloadNormalizerService.name,
     );
 
@@ -335,6 +329,160 @@ export class SkinportPayloadNormalizerService {
         ...warnings,
       ],
     };
+  }
+
+  private async normalizeItemSnapshotChunk(input: {
+    readonly archive: ArchivedRawPayloadDto;
+    readonly chunk: readonly SkinportItemSnapshotDto[];
+    readonly chunkIndex: number;
+    readonly chunkCount: number;
+    readonly runContext: SkinportCatalogLinkerRunContext;
+  }): Promise<SkinportSnapshotChunkResult> {
+    const startedAt = Date.now();
+    const listings: NormalizedMarketListingDto[] = [];
+    const marketStates: NormalizedMarketStateDto[] = [];
+    const warnings: string[] = [];
+    const filterBuckets = new Map<string, SkinportFilterBucket>();
+    const resolutionBatch =
+      await this.skinportCatalogLinkerService.resolveOrCreateMany(
+        input.chunk.map(
+          (item): ResolveSkinportListingInput => ({
+            marketHashName: item.market_hash_name,
+          }),
+        ),
+        input.runContext,
+      );
+
+    for (const item of input.chunk) {
+      const linkedItem = this.readCatalogResolution(
+        resolutionBatch.resolutions,
+        item.market_hash_name,
+      );
+
+      if (
+        linkedItem.status !== 'resolved' ||
+        !linkedItem.canonicalItemId ||
+        !linkedItem.itemVariantId
+      ) {
+        this.recordFilterReason(
+          filterBuckets,
+          'unresolved_catalog',
+          item.market_hash_name,
+        );
+        warnings.push(
+          this.buildUnresolvedWarning(item.market_hash_name, linkedItem),
+        );
+        continue;
+      }
+
+      if (item.quantity <= 0) {
+        this.recordFilterReason(
+          filterBuckets,
+          'non_positive_quantity',
+          item.market_hash_name,
+        );
+      } else if (item.min_price === null) {
+        this.recordFilterReason(
+          filterBuckets,
+          'missing_min_price',
+          item.market_hash_name,
+        );
+      } else {
+        listings.push({
+          source: input.archive.source,
+          externalListingId: `skinport:items:${item.market_hash_name}`,
+          sourceItemId: item.market_hash_name,
+          canonicalItemId: linkedItem.canonicalItemId,
+          itemVariantId: linkedItem.itemVariantId,
+          title: this.aliasNormalizationService.normalizeMarketHashName(
+            item.market_hash_name,
+          ),
+          observedAt: input.archive.observedAt,
+          currency: item.currency,
+          listingUrl: item.market_page,
+          priceMinor: this.priceToMinor(
+            item.min_price ?? item.suggested_price ?? 0,
+          ),
+          quantityAvailable: item.quantity,
+          isStatTrak: linkedItem.mapping.stattrak,
+          isSouvenir: linkedItem.mapping.souvenir,
+          metadata: {
+            itemPage: item.item_page,
+            marketPage: item.market_page,
+            minPrice: item.min_price,
+            maxPrice: item.max_price,
+            meanPrice: item.mean_price,
+            suggestedPrice: item.suggested_price,
+          },
+        });
+      }
+
+      marketStates.push({
+        source: input.archive.source,
+        canonicalItemId: linkedItem.canonicalItemId,
+        itemVariantId: linkedItem.itemVariantId,
+        capturedAt: input.archive.observedAt,
+        currency: item.currency,
+        listingCount: item.quantity,
+        confidence: this.deriveSnapshotConfidence(
+          item.quantity,
+          item.min_price !== null,
+        ),
+        liquidityScore: this.deriveLiquidityScore(item.quantity),
+        metadata: {
+          itemPage: item.item_page,
+          marketPage: item.market_page,
+          updatedAt: item.updated_at,
+        },
+        ...(item.min_price !== null
+          ? { lowestAskMinor: this.priceToMinor(item.min_price) }
+          : {}),
+        ...(item.median_price !== null
+          ? { medianAskMinor: this.priceToMinor(item.median_price) }
+          : {}),
+      });
+    }
+
+    const durationMs = Date.now() - startedAt;
+
+    this.logger.log(
+      `Skinport ${input.archive.endpointName} (${input.archive.id}) chunk=${input.chunkIndex + 1}/${input.chunkCount} batchSize=${resolutionBatch.stats.batchSize} uniqueListingKeys=${resolutionBatch.stats.uniqueListingKeys} createdCatalogMappings=${resolutionBatch.stats.createdCount} reusedCatalogMappings=${resolutionBatch.stats.reusedCount} updatedCatalogMappings=${resolutionBatch.stats.updatedCount} unresolvedCatalogMappings=${resolutionBatch.stats.unresolvedCount} durationMs=${durationMs}.`,
+      SkinportPayloadNormalizerService.name,
+    );
+
+    return {
+      listings,
+      marketStates,
+      warnings,
+      filterBuckets,
+      batchStats: resolutionBatch.stats,
+      durationMs,
+    };
+  }
+
+  private readCatalogResolution(
+    resolutions: ReadonlyMap<string, CatalogResolutionDto>,
+    marketHashName: string,
+    version?: string | null,
+  ): CatalogResolutionDto {
+    const resolution = resolutions.get(
+      this.buildResolutionKey(marketHashName, version),
+    );
+
+    if (!resolution) {
+      throw new Error(
+        `Skinport catalog batch did not return a resolution for "${marketHashName}"${version ? ` (${version})` : ''}.`,
+      );
+    }
+
+    return resolution;
+  }
+
+  private buildResolutionKey(
+    marketHashName: string,
+    version?: string | null,
+  ): string {
+    return `${marketHashName}::${version ?? ''}`;
   }
 
   private buildUnresolvedWarning(
@@ -401,5 +549,29 @@ export class SkinportPayloadNormalizerService {
     buckets: ReadonlyMap<string, SkinportFilterBucket>,
   ): Record<string, SkinportFilterBucket> {
     return Object.fromEntries(buckets.entries());
+  }
+
+  private mergeFilterBuckets(
+    target: Map<string, SkinportFilterBucket>,
+    source: ReadonlyMap<string, SkinportFilterBucket>,
+  ): void {
+    for (const [reason, bucket] of source.entries()) {
+      const existingBucket = target.get(reason) ?? {
+        count: 0,
+        sampleNames: [],
+      };
+
+      existingBucket.count += bucket.count;
+      for (const sampleName of bucket.sampleNames) {
+        if (existingBucket.sampleNames.length >= 5) {
+          break;
+        }
+
+        if (!existingBucket.sampleNames.includes(sampleName)) {
+          existingBucket.sampleNames.push(sampleName);
+        }
+      }
+      target.set(reason, existingBucket);
+    }
   }
 }

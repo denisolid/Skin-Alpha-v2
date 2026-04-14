@@ -6,4 +6,5 @@ export interface MarketStateUpdateResultDto {
   readonly snapshotCount: number;
   readonly upsertedStateCount: number;
   readonly skippedCount: number;
+  readonly unchangedProjectionSkipCount: number;
 }

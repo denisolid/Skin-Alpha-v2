@@ -7,23 +7,23 @@ import {
   BITSKINS_SYNC_QUEUE_NAME,
 } from '../../domain/managed-market.constants';
 import type { ManagedMarketSyncJobData } from '../../domain/managed-market-source.types';
-import { ManagedMarketSyncService } from '../../services/managed-market-sync.service';
+import { BitSkinsSyncService } from '../../services/bitskins-sync.service';
 
 @Injectable()
 @Processor(BITSKINS_SYNC_QUEUE_NAME)
 export class BitSkinsSyncProcessor extends WorkerHost {
   constructor(
-    @Inject(ManagedMarketSyncService)
-    private readonly managedMarketSyncService: ManagedMarketSyncService,
+    @Inject(BitSkinsSyncService)
+    private readonly bitSkinsSyncService: BitSkinsSyncService,
   ) {
     super();
   }
 
-  async process(job: Job<ManagedMarketSyncJobData>): Promise<void> {
+  async process(job: Job<ManagedMarketSyncJobData, void, string>): Promise<void> {
     if (job.name !== BITSKINS_SYNC_JOB_NAME) {
       return;
     }
 
-    await this.managedMarketSyncService.syncSource('bitskins', job.data);
+    await this.bitSkinsSyncService.syncMarket(job.data);
   }
 }

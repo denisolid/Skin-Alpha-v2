@@ -48,6 +48,27 @@ export function formatDateTime(value: string | undefined): string {
   return shortTimeFormatter.format(new Date(value));
 }
 
+export function formatDurationMs(value: number | undefined): string {
+  if (value === undefined || Number.isNaN(value)) {
+    return 'n/a';
+  }
+
+  if (value < 1000) {
+    return `${Math.round(value)} ms`;
+  }
+
+  const totalSeconds = Math.round(value / 1000);
+
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
 export function getRiskTone(riskClass: OpportunityRiskClass): string {
   switch (riskClass) {
     case 'low':
@@ -79,6 +100,18 @@ export function formatSourceName(source: SourceAdapterKey): string {
       return 'Skinport';
     case 'csfloat':
       return 'CSFloat';
+    case 'dmarket':
+      return 'DMarket';
+    case 'waxpeer':
+      return 'Waxpeer';
+    case 'youpin':
+      return 'YouPin';
+    case 'bitskins':
+      return 'BitSkins';
+    case 'c5game':
+      return 'C5Game';
+    case 'csmoney':
+      return 'CS.MONEY';
     case 'steam-snapshot':
       return 'Steam Snapshot';
     case 'backup-aggregator':
@@ -89,7 +122,10 @@ export function formatSourceName(source: SourceAdapterKey): string {
 export function getSourcePairLabel(sourcePairKey: string): [string, string] {
   const [buySource, sellSource] = sourcePairKey.split('->');
 
-  return [buySource ?? 'unknown', sellSource ?? 'unknown'];
+  return [
+    buySource ? formatSourceName(buySource as SourceAdapterKey) : 'unknown',
+    sellSource ? formatSourceName(sellSource as SourceAdapterKey) : 'unknown',
+  ];
 }
 
 export function getFetchModeLabel(
@@ -105,4 +141,12 @@ export function getFetchModeLabel(
     case 'backup':
       return 'Backup';
   }
+}
+
+export function formatTokenLabel(value: string | undefined): string {
+  if (!value) {
+    return 'n/a';
+  }
+
+  return value.replace(/_/g, ' ');
 }

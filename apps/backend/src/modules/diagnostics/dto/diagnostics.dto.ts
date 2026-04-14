@@ -12,7 +12,11 @@ import type { OpportunityAntiFakeCounters } from '../../opportunities/domain/ant
 import type { SourceAdapterKey } from '../../source-adapters/domain/source-adapter.types';
 
 export type DiagnosticsHealthState = HealthStatus | 'UNKNOWN';
-export type UnresolvedSignalKind = 'job-run' | 'sync-status' | 'health-metric';
+export type UnresolvedSignalKind =
+  | 'pending-mapping'
+  | 'job-run'
+  | 'sync-status'
+  | 'health-metric';
 
 export interface DiagnosticsFreshnessCountsDto {
   readonly totalItems: number;
@@ -59,6 +63,13 @@ export interface SourceHealthDashboardItemDto {
   readonly sourceName: string;
   readonly sourceKind: SourceKind;
   readonly isEnabled: boolean;
+  readonly integrationModel?: string;
+  readonly operationalStage?: string;
+  readonly runtimeState?: 'active' | 'degraded' | 'cooldown' | 'disabled';
+  readonly runtimeReason?: string;
+  readonly requiresProxy?: boolean;
+  readonly requiresSession?: boolean;
+  readonly requiresAccount?: boolean;
   readonly healthStatus: DiagnosticsHealthState;
   readonly healthCheckedAt?: Date;
   readonly availabilityRatio?: number;
@@ -101,6 +112,13 @@ export interface QueueLagMetricDto {
   readonly canceledLast24h: number;
 }
 
+export interface SchedulerLockMetricDto {
+  readonly key: string;
+  readonly held: boolean;
+  readonly ttlMs?: number;
+  readonly acquiredAt?: Date;
+}
+
 export interface QueueLagMetricsDto {
   readonly generatedAt: Date;
   readonly summary: {
@@ -110,6 +128,7 @@ export interface QueueLagMetricsDto {
     readonly failedLast24h: number;
   };
   readonly queues: readonly QueueLagMetricDto[];
+  readonly maintenanceLocks: readonly SchedulerLockMetricDto[];
 }
 
 export interface RateLimitBurnMetricDto {
@@ -135,11 +154,47 @@ export interface SourceOperationalSummaryItemDto {
   readonly sourceKind: SourceKind;
   readonly isEnabled: boolean;
   readonly classification?: string;
+  readonly integrationModel?: string;
+  readonly operationalStage?: string;
+  readonly runtimeState?: 'active' | 'degraded' | 'cooldown' | 'disabled';
+  readonly runtimeReason?: string;
+  readonly requiresProxy?: boolean;
+  readonly requiresSession?: boolean;
+  readonly requiresAccount?: boolean;
+  readonly rawPayloadArchivesCount: number;
   readonly sourceListingsCount: number;
+  readonly sourceMarketFactsCount: number;
   readonly marketSnapshotsCount: number;
   readonly marketStatesCount: number;
+  readonly pendingMappingsCount: number;
   readonly unresolvedMappingSignalCount: number;
+  readonly latestRawPayloadObservedAt?: Date;
   readonly latestMarketStateObservedAt?: Date;
+  readonly latestNormalizedAt?: Date;
+  readonly rawToStateLagMs?: number;
+  readonly projectionAmplificationRatio?: number;
+  readonly usefulPayloadRatio?: number;
+  readonly unchangedProjectionSkipCount: number;
+  readonly canonicalOverlapVariantCount: number;
+  readonly pairableOverlapVariantCount: number;
+  readonly blockedOverlapVariantCount: number;
+  readonly averageOverlapQualityScore?: number;
+}
+
+export interface CsFloatCoverageDiagnosticsDto {
+  readonly skinportTrackedVariantCount: number;
+  readonly csfloatTrackedVariantCount: number;
+  readonly overlapWithSkinportCount: number;
+  readonly csfloatOverlapEligibleVariantCount: number;
+  readonly csfloatCoverageGapVsSkinport: number;
+  readonly hotVariantCount: number;
+  readonly csfloatCoveredHotVariantCount: number;
+  readonly csfloatHotVariantCoverage: number;
+  readonly csfloatActiveListingCount: number;
+  readonly csfloatListingsPerHotVariant: number;
+  readonly recentDetailFetchCount: number;
+  readonly recentUsefulDetailFetchCount: number;
+  readonly usefulDetailFetchRatio?: number;
 }
 
 export interface SourceOperationalSummaryDto {
@@ -147,6 +202,7 @@ export interface SourceOperationalSummaryDto {
   readonly variantsWithTwoPlusSources: number;
   readonly variantsWithThreePlusSources: number;
   readonly sources: readonly SourceOperationalSummaryItemDto[];
+  readonly csfloatCoverage?: CsFloatCoverageDiagnosticsDto;
 }
 
 export interface SourcePairOverlapItemDto {
@@ -154,7 +210,10 @@ export interface SourcePairOverlapItemDto {
   readonly leftSourceName: string;
   readonly rightSource: SourceAdapterKey;
   readonly rightSourceName: string;
+  readonly canonicalOverlapCount: number;
   readonly pairableVariantCount: number;
+  readonly blockedVariantCount: number;
+  readonly overlapQualityScore: number;
   readonly pairBuildingAllowed: boolean;
   readonly pairPolicy: 'standard' | 'penalized' | 'confirmation-only';
 }

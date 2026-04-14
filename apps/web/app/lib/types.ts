@@ -3,6 +3,12 @@ export type ItemCategory = 'SKIN' | 'KNIFE' | 'GLOVE' | 'CASE' | 'CAPSULE';
 export type SourceAdapterKey =
   | 'skinport'
   | 'csfloat'
+  | 'dmarket'
+  | 'waxpeer'
+  | 'youpin'
+  | 'bitskins'
+  | 'c5game'
+  | 'csmoney'
   | 'steam-snapshot'
   | 'backup-aggregator';
 
@@ -15,6 +21,26 @@ export type OpportunityDisposition =
   | 'eligible'
   | 'risky_high_upside'
   | 'rejected';
+export type OpportunitySurfaceTier =
+  | 'tradable'
+  | 'reference_backed'
+  | 'near_eligible'
+  | 'research'
+  | 'rejected';
+export type OpportunityBlockerReason =
+  | 'steam_snapshot_pair'
+  | 'listed_exit_only'
+  | 'fallback_data'
+  | 'low_expected_net'
+  | 'low_spread_percent'
+  | 'low_confidence'
+  | 'low_liquidity'
+  | 'strict_variant_key_missing'
+  | 'strict_variant_key_mismatch'
+  | 'pre_score_outlier'
+  | 'insufficient_comparables'
+  | 'stale_sources';
+export type OpportunityRiskReasonSeverity = 'info' | 'warning' | 'critical';
 export type MarketFetchMode = 'live' | 'snapshot' | 'fallback' | 'backup';
 
 export interface CurrentUserIdentity {
@@ -106,6 +132,85 @@ export interface OpportunityFeedSummary {
   readonly nearEligible: number;
   readonly eligible: number;
   readonly riskyHighUpside: number;
+  readonly tradable: number;
+  readonly referenceBacked: number;
+  readonly nearEligibleTier: number;
+  readonly research: number;
+}
+
+export interface OpportunityFeedDiagnosticCount {
+  readonly key: string;
+  readonly count: number;
+}
+
+export interface OpportunityFeedSourcePairDiagnostic {
+  readonly sourcePairKey: string;
+  readonly overlapCount: number;
+  readonly directionalEvaluationCount: number;
+  readonly directionalBuyAskCount: number;
+  readonly directionalSellExitCount: number;
+  readonly directionalFirmExitCount: number;
+  readonly directionalListedExitOnlyCount: number;
+  readonly directionalMissingSignalCount: number;
+  readonly pairableVariantCount: number;
+  readonly blockedBeforePairabilityCount: number;
+  readonly blockedAfterPairabilityCount: number;
+  readonly nearMissCandidateCount: number;
+  readonly eligibleCount: number;
+  readonly visibleFeedCount: number;
+  readonly topBlockers: readonly OpportunityFeedDiagnosticCount[];
+}
+
+export interface OpportunityFeedCoverageImbalance {
+  readonly dominantSource: SourceAdapterKey;
+  readonly dominantCoverageCount: number;
+  readonly bottleneckSource: SourceAdapterKey;
+  readonly bottleneckCoverageCount: number;
+  readonly coverageRatio: number;
+}
+
+export interface OpportunityFeedRejectionSummary {
+  readonly variantsRejectedForMissingCounterSource: number;
+  readonly variantsRejectedForLowOverlapOrLowPairability: number;
+  readonly pairsRejectedForCanonicalOrVariantMismatch: number;
+  readonly pairsRejectedForFeesOrExecutionNet: number;
+  readonly pairsRejectedForMinProfit: number;
+  readonly pairsRejectedForConfidenceThreshold: number;
+  readonly pairsRejectedForBlockerOrRiskRules: number;
+  readonly pairsRejectedForFreshnessOrLiquidity: number;
+  readonly primaryRejectStages: readonly OpportunityFeedDiagnosticCount[];
+  readonly blockerCountsByReason: readonly OpportunityFeedDiagnosticCount[];
+  readonly topRejectReasons: readonly OpportunityFeedDiagnosticCount[];
+  readonly topBlockerReasons: readonly OpportunityFeedDiagnosticCount[];
+}
+
+export interface OpportunityFeedDiagnostics {
+  readonly scannedVariantCount: number;
+  readonly variantsWithCounterSourceCandidate: number;
+  readonly noPairablePairCount: number;
+  readonly evaluatedPairCount: number;
+  readonly pairableCount: number;
+  readonly blockedBeforePairabilityCount: number;
+  readonly blockedAfterPairabilityCount: number;
+  readonly nearMissCandidateCount: number;
+  readonly eligibleCount: number;
+  readonly visibleFeedCount: number;
+  readonly validOpportunityCount: number;
+  readonly feedEligibleCount: number;
+  readonly blockedButPresentCount: number;
+  readonly listedExitOnlyCount: number;
+  readonly strictVariantIdentityRejectCount: number;
+  readonly staleRejectCount: number;
+  readonly missingMarketSignalRejectCount: number;
+  readonly buySourceHasNoAskRejectCount: number;
+  readonly sellSourceHasNoExitSignalRejectCount: number;
+  readonly lowConfidenceCandidateCount: number;
+  readonly hiddenByFeedQueryFilters: number;
+  readonly averageExecutionNetAfterFees?: number;
+  readonly sourceCoverageImbalance?: OpportunityFeedCoverageImbalance;
+  readonly pipelineDiagnostics: readonly OpportunityFeedDiagnosticCount[];
+  readonly overlapBySourcePair: readonly OpportunityFeedSourcePairDiagnostic[];
+  readonly rejectionSummary: OpportunityFeedRejectionSummary;
 }
 
 export interface OpportunitySourceLeg {
@@ -124,7 +229,9 @@ export interface OpportunitySourceLeg {
 }
 
 export interface OpportunityPublicFeedItem {
+  readonly opportunityKey: string;
   readonly disposition: OpportunityDisposition;
+  readonly surfaceTier: OpportunitySurfaceTier;
   readonly riskClass: OpportunityRiskClass;
   readonly category: ItemCategory;
   readonly itemType: string;
@@ -141,6 +248,7 @@ export interface OpportunityPublicFeedItem {
   readonly finalConfidence: number;
   readonly freshness: number;
   readonly liquidity: number;
+  readonly blockerReason?: OpportunityBlockerReason;
   readonly observedAt: string;
 }
 
@@ -154,6 +262,117 @@ export interface OpportunityPenaltyBreakdown {
   readonly totalPenalty: number;
 }
 
+export interface OpportunityRiskReason {
+  readonly code: string;
+  readonly severity: OpportunityRiskReasonSeverity;
+  readonly detail: string;
+}
+
+export interface OpportunityComponentScores {
+  readonly mappingConfidence: number;
+  readonly priceConfidence: number;
+  readonly liquidityConfidence: number;
+  readonly freshnessConfidence: number;
+  readonly sourceReliabilityConfidence: number;
+  readonly variantMatchConfidence: number;
+}
+
+export interface OpportunityExecutionBreakdown {
+  readonly realizedSellPrice: number;
+  readonly buyPrice: number;
+  readonly fees: number;
+  readonly slippagePenalty: number;
+  readonly liquidityPenalty: number;
+  readonly uncertaintyPenalty: number;
+  readonly expectedNet: number;
+}
+
+export interface OpportunityStrictTradableKey {
+  readonly key: string;
+  readonly condition: string;
+  readonly stattrak: boolean;
+  readonly souvenir: boolean;
+  readonly vanilla: boolean;
+  readonly phase: string;
+  readonly patternSensitiveBucket: string;
+  readonly floatBucket: string;
+}
+
+export interface OpportunityStrictTradableMatch {
+  readonly matched: boolean;
+  readonly buyKey?: OpportunityStrictTradableKey;
+  readonly sellKey?: OpportunityStrictTradableKey;
+}
+
+export interface OpportunityPreScoreGate {
+  readonly passed: boolean;
+  readonly comparableCount: number;
+  readonly sourceMedian?: number;
+  readonly crossSourceConsensus?: number;
+  readonly rejectedByStale: boolean;
+  readonly rejectedByMedian: boolean;
+  readonly rejectedByConsensus: boolean;
+  readonly rejectedByComparableCount: boolean;
+  readonly reasonCodes: readonly string[];
+}
+
+export interface OpportunityEligibility {
+  readonly surfaceTier: OpportunitySurfaceTier;
+  readonly eligible: boolean;
+  readonly requiresReferenceSupport: boolean;
+  readonly steamSnapshotDemoted: boolean;
+  readonly blockerReason?: OpportunityBlockerReason;
+}
+
+export interface OpportunityValidation {
+  readonly status: 'passed' | 'warned' | 'rejected';
+  readonly hardReject: boolean;
+  readonly matchConfidence: number;
+  readonly premiumContaminationRisk: number;
+  readonly marketSanityRisk: number;
+  readonly confirmationScore: number;
+  readonly reasonCodes: readonly string[];
+}
+
+export interface OpportunityAntiFakeAssessment {
+  readonly hardReject: boolean;
+  readonly riskScore: number;
+  readonly matchConfidence: number;
+  readonly premiumContaminationRisk: number;
+  readonly marketSanityRisk: number;
+  readonly confirmationScore: number;
+  readonly reasonCodes: readonly string[];
+}
+
+export interface OpportunityPairability {
+  readonly status: 'pairable' | 'listed_exit_only' | 'blocked';
+  readonly sameSourceBlocked: boolean;
+  readonly listedExitOnly: boolean;
+  readonly usesFallbackData: boolean;
+  readonly schemeBlocked: boolean;
+}
+
+export interface OpportunityExplainability {
+  readonly reasonCodes: readonly string[];
+  readonly penalties: OpportunityPenaltyBreakdown;
+}
+
+export interface OpportunityRankingInputs {
+  readonly surfaceTierRank: number;
+  readonly dispositionRank: number;
+  readonly bucketBase: number;
+  readonly qualityScore: number;
+  readonly penaltyScore: number;
+  readonly rankScore: number;
+  readonly freshnessScore: number;
+  readonly liquidityScore: number;
+  readonly pairabilityScore: number;
+  readonly variantCertainty: number;
+  readonly sourceReliability: number;
+  readonly feeAdjustedNetProfit: number;
+  readonly feeAdjustedSpreadPercent: number;
+}
+
 export interface OpportunityFullFeedItem extends OpportunityPublicFeedItem {
   readonly canonicalItemId: string;
   readonly rawSpread: number;
@@ -165,19 +384,28 @@ export interface OpportunityFullFeedItem extends OpportunityPublicFeedItem {
   readonly sellSignalPrice: number;
   readonly buy: OpportunitySourceLeg;
   readonly sell: OpportunitySourceLeg;
+  readonly riskReasons: readonly OpportunityRiskReason[];
+  readonly componentScores: OpportunityComponentScores;
+  readonly execution: OpportunityExecutionBreakdown;
+  readonly strictTradable: OpportunityStrictTradableMatch;
+  readonly preScoreGate: OpportunityPreScoreGate;
+  readonly eligibility: OpportunityEligibility;
+  readonly validation: OpportunityValidation;
+  readonly pairability: OpportunityPairability;
+  readonly explainability: OpportunityExplainability;
+  readonly rankingInputs: OpportunityRankingInputs;
   readonly backupConfirmation?: {
     readonly source: SourceAdapterKey;
     readonly sourceName: string;
     readonly referencePrice: number;
   };
-  readonly reasonCodes?: readonly string[];
-  readonly penalties?: OpportunityPenaltyBreakdown;
 }
 
 export interface OpportunityFeedPage<TItem> {
   readonly pageInfo: OpportunityFeedPageInfo;
   readonly filters: OpportunityFeedFilters;
   readonly summary: OpportunityFeedSummary;
+  readonly diagnostics: OpportunityFeedDiagnostics;
   readonly items: readonly TItem[];
 }
 
@@ -185,6 +413,68 @@ export type OpportunityPublicFeedPage =
   OpportunityFeedPage<OpportunityPublicFeedItem>;
 export type OpportunityFullFeedPage =
   OpportunityFeedPage<OpportunityFullFeedItem>;
+
+export interface OpportunityRejectDiagnosticItem extends OpportunityFullFeedItem {
+  readonly reasonCodes: readonly string[];
+  readonly penalties: OpportunityPenaltyBreakdown;
+  readonly antiFakeAssessment: OpportunityAntiFakeAssessment;
+  readonly primaryRejectStage: string;
+  readonly blockerClass: 'market_real' | 'system_induced' | 'mixed';
+  readonly prePairRejectReason?: string;
+  readonly postPairRejectReason?: string;
+  readonly overlapExisted: boolean;
+  readonly pairReachedPairability: boolean;
+  readonly blockedBeforePairability: boolean;
+  readonly blockedAfterPairability: boolean;
+  readonly listedExitOnly: boolean;
+  readonly blockedButPresentCandidate: boolean;
+  readonly strictVariantIdentityRejected: boolean;
+  readonly strictIdentityDetails?: {
+    readonly status: 'missing_key' | 'mismatch';
+    readonly differingFields: readonly string[];
+  };
+  readonly staleRejected: boolean;
+  readonly missingMarketSignalRejected: boolean;
+  readonly failedOnlyBecauseListedExit: boolean;
+  readonly failedOnlyBecauseStale: boolean;
+  readonly failedOnlyBecauseStrictVariantKey: boolean;
+}
+
+export interface OpportunityRejectDiagnosticsPage {
+  readonly pageInfo: OpportunityFeedPageInfo;
+  readonly filters: OpportunityFeedFilters;
+  readonly totalRejected: number;
+  readonly items: readonly OpportunityRejectDiagnosticItem[];
+}
+
+export interface SourceOperationalSummaryItem {
+  readonly source: SourceAdapterKey;
+  readonly sourceName: string;
+  readonly sourceKind: 'MARKETPLACE' | 'AGGREGATOR' | 'INVENTORY_SERVICE' | 'OFFICIAL';
+  readonly isEnabled: boolean;
+  readonly classification?: string;
+  readonly rawPayloadArchivesCount: number;
+  readonly sourceListingsCount: number;
+  readonly sourceMarketFactsCount: number;
+  readonly marketSnapshotsCount: number;
+  readonly marketStatesCount: number;
+  readonly pendingMappingsCount: number;
+  readonly unresolvedMappingSignalCount: number;
+  readonly latestRawPayloadObservedAt?: string;
+  readonly latestMarketStateObservedAt?: string;
+  readonly latestNormalizedAt?: string;
+  readonly rawToStateLagMs?: number;
+  readonly projectionAmplificationRatio?: number;
+  readonly usefulPayloadRatio?: number;
+  readonly unchangedProjectionSkipCount: number;
+}
+
+export interface SourceOperationalSummary {
+  readonly generatedAt: string;
+  readonly variantsWithTwoPlusSources: number;
+  readonly variantsWithThreePlusSources: number;
+  readonly sources: readonly SourceOperationalSummaryItem[];
+}
 
 export interface WatchlistItem {
   readonly id: string;
@@ -224,6 +514,58 @@ export interface CatalogBootstrapResult {
   readonly seededItemCount: number;
   readonly canonicalItemsCreated: number;
   readonly itemVariantsCreated: number;
+  readonly seedItems: {
+    readonly existingMatched: number;
+    readonly created: number;
+    readonly updated: number;
+    readonly skipped: number;
+    readonly failed: number;
+  };
+  readonly canonicalItems: {
+    readonly existingMatched: number;
+    readonly created: number;
+    readonly updated: number;
+    readonly skipped: number;
+    readonly failed: number;
+  };
+  readonly itemVariants: {
+    readonly existingMatched: number;
+    readonly created: number;
+    readonly updated: number;
+    readonly skipped: number;
+    readonly failed: number;
+  };
+  readonly results: readonly {
+    readonly marketHashName: string;
+    readonly canonicalSlug?: string;
+    readonly variantKey?: string;
+    readonly status:
+      | 'existingMatched'
+      | 'created'
+      | 'updated'
+      | 'skipped'
+      | 'failed';
+    readonly canonicalItem: {
+      readonly status:
+        | 'existingMatched'
+        | 'created'
+        | 'updated'
+        | 'skipped'
+        | 'failed';
+      readonly id?: string;
+    };
+    readonly itemVariant: {
+      readonly status:
+        | 'existingMatched'
+        | 'created'
+        | 'updated'
+        | 'skipped'
+        | 'failed';
+      readonly id?: string;
+    };
+    readonly warnings: readonly string[];
+    readonly failureReason?: string;
+  }[];
   readonly warnings: readonly string[];
 }
 
@@ -263,6 +605,7 @@ export interface SourceSyncBatchAccepted {
 export interface MarketStateRebuildResult {
   readonly processedSnapshotCount: number;
   readonly rebuiltStateCount: number;
+  readonly unchangedProjectionSkipCount: number;
 }
 
 export interface OpportunityRescanResult {
@@ -272,4 +615,47 @@ export interface OpportunityRescanResult {
   readonly persistedOpportunityCount: number;
   readonly expiredOpportunityCount: number;
   readonly skippedMissingSnapshotCount: number;
+  readonly variantFunnel: {
+    readonly scanned: number;
+    readonly withFetchedRows: number;
+    readonly withNormalizedRows: number;
+    readonly withCanonicalMatchedRows: number;
+    readonly withEvaluatedPairs: number;
+    readonly withPairablePairs: number;
+    readonly withCandidatePairs: number;
+    readonly withEligiblePairs: number;
+    readonly withSurfacedPairs: number;
+  };
+  readonly pairFunnel: {
+    readonly evaluated: number;
+    readonly returned: number;
+    readonly rejected: number;
+    readonly blocked: number;
+    readonly listedExitOnly: number;
+    readonly softListedExitOnly: number;
+    readonly pairable: number;
+    readonly buySourceHasNoAsk: number;
+    readonly sellSourceHasNoExitSignal: number;
+    readonly strictVariantKeyMissing: number;
+    readonly strictVariantKeyMismatch: number;
+    readonly preScoreRejected: number;
+    readonly antiFakeRejected: number;
+    readonly nearEqualAfterFees: number;
+    readonly trueNonPositiveEdge: number;
+    readonly negativeExpectedNet: number;
+    readonly confidenceBelowCandidateFloor: number;
+    readonly otherRejected: number;
+    readonly candidate: number;
+    readonly nearEligible: number;
+    readonly eligible: number;
+    readonly riskyHighUpside: number;
+  };
+  readonly topRejectReasons: readonly {
+    readonly reasonCode: string;
+    readonly count: number;
+  }[];
+  readonly topBlockerReasons: readonly {
+    readonly blockerReason: string;
+    readonly count: number;
+  }[];
 }

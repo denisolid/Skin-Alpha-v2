@@ -1,5 +1,6 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 
+import { CatalogAliasNormalizationService } from '../../catalog/services/catalog-alias-normalization.service';
 import type {
   MergedMarketMatrixDto,
   MergedMarketMatrixRowDto,
@@ -11,20 +12,30 @@ import type {
   EvaluateOpportunityMatrixInput,
   EvaluateOpportunityVariantInput,
   EvaluateOpportunityVariantsInput,
+  OpportunityComponentScoresDto,
   OpportunityEngineScanResultDto,
   OpportunityEngineVariantResultDto,
+  OpportunityEligibilityDto,
   OpportunityEvaluationDto,
+  OpportunityExecutionBreakdownDto,
+  OpportunityFunnelMetricsDto,
   OpportunityPairabilityDto,
   OpportunityPenaltyBreakdownDto,
+  OpportunityPreScoreGateDto,
   OpportunityRankingInputsDto,
+  OpportunityRiskReasonDto,
   OpportunitySourceLegDto,
+  OpportunityStrictTradableKeyDto,
+  OpportunityStrictTradableMatchDto,
   OpportunityValidationDto,
 } from '../domain/opportunity-engine.contract';
 import {
   OPPORTUNITY_EVALUATION_DISPOSITIONS,
+  type OpportunityBlockerReason,
   type OpportunityEvaluationDisposition,
   type OpportunityEngineRiskClass,
   type OpportunityReasonCode,
+  type OpportunitySurfaceTier,
 } from '../domain/opportunity-engine.model';
 import { OPPORTUNITY_CATEGORY_POLICIES } from '../domain/opportunity-engine-policy.model';
 import { buildOpportunityKey } from '../domain/opportunity-key';
@@ -32,6 +43,10 @@ import { OpportunityAntiFakeService } from './opportunity-anti-fake.service';
 import { OpportunityEnginePolicyService } from './opportunity-engine-policy.service';
 
 const DEFAULT_ENGINE_MAX_PAIRS = 12;
+const POST_FEE_EDGE_EPSILON = 0.005;
+const AGGREGATE_IDENTITY_SOURCES = new Set<
+  MergedMarketMatrixRowDto['source']
+>(['skinport', 'waxpeer', 'bitskins']);
 
 @Injectable()
 export class OpportunityEngineService {
@@ -42,14 +57,23 @@ export class OpportunityEngineService {
     private readonly opportunityEnginePolicyService: OpportunityEnginePolicyService,
     @Inject(OpportunityAntiFakeService)
     private readonly opportunityAntiFakeService: OpportunityAntiFakeService,
+    @Optional()
+    @Inject(CatalogAliasNormalizationService)
+    private readonly aliasNormalizationService: CatalogAliasNormalizationService = new CatalogAliasNormalizationService(),
   ) {}
 
   async evaluateVariant(
     itemVariantId: string,
     input: EvaluateOpportunityVariantInput = {},
   ): Promise<OpportunityEngineVariantResultDto> {
-    const matrix =
-      await this.marketStateMergeService.getVariantMatrix(itemVariantId);
+    const matrix = await this.marketStateMergeService.getVariantMatrix(
+      itemVariantId,
+      {
+        ...(input.allowHistoricalFallback !== undefined
+          ? { allowHistoricalFallback: input.allowHistoricalFallback }
+          : {}),
+      },
+    );
 
     return this.evaluateMatrix({
       matrix,
@@ -64,18 +88,36 @@ export class OpportunityEngineService {
   ): Promise<OpportunityEngineScanResultDto> {
     const generatedAt = new Date();
     const itemVariantIds = [...new Set(input.itemVariantIds)];
-    const results = await Promise.all(
-      itemVariantIds.map((itemVariantId) =>
-        this.evaluateVariant(itemVariantId, {
-          ...(input.includeRejected !== undefined
-            ? { includeRejected: input.includeRejected }
-            : {}),
-          ...(input.maxPairs !== undefined ? { maxPairs: input.maxPairs } : {}),
-          ...(input.scheme ? { scheme: input.scheme } : {}),
-        }),
-      ),
+    const matrices = await this.marketStateMergeService.getVariantMatrices(
+      itemVariantIds,
+      {
+        ...(input.allowHistoricalFallback !== undefined
+          ? { allowHistoricalFallback: input.allowHistoricalFallback }
+          : {}),
+      },
+    );
+    const results = matrices.map((matrix) =>
+      this.evaluateMatrix({
+        matrix,
+        includeRejected: input.includeRejected ?? false,
+        maxPairs: input.maxPairs ?? DEFAULT_ENGINE_MAX_PAIRS,
+        ...(input.scheme ? { scheme: input.scheme } : {}),
+      }),
     );
     const dispositionSummary = this.createDispositionSummary();
+    const diagnostics = results.reduce(
+      (aggregate, result) => ({
+        fetched: aggregate.fetched + result.diagnostics.fetched,
+        normalized: aggregate.normalized + result.diagnostics.normalized,
+        canonicalMatched:
+          aggregate.canonicalMatched + result.diagnostics.canonicalMatched,
+        pairable: aggregate.pairable + result.diagnostics.pairable,
+        candidate: aggregate.candidate + result.diagnostics.candidate,
+        eligible: aggregate.eligible + result.diagnostics.eligible,
+        surfaced: aggregate.surfaced + result.diagnostics.surfaced,
+      }),
+      this.createEmptyFunnelMetrics(),
+    );
 
     for (const result of results) {
       for (const disposition of OPPORTUNITY_EVALUATION_DISPOSITIONS) {
@@ -95,6 +137,7 @@ export class OpportunityEngineService {
       antiFakeCounters: this.opportunityAntiFakeService.createCounters(
         results.flatMap((result) => result.evaluations),
       ),
+      diagnostics,
       results,
     };
   }
@@ -114,6 +157,7 @@ export class OpportunityEngineService {
         returnedPairCount: 0,
         dispositionSummary: this.createDispositionSummary(),
         antiFakeCounters: this.opportunityAntiFakeService.createCounters([]),
+        diagnostics: this.createEmptyFunnelMetrics(),
         evaluations: [],
       };
     }
@@ -156,6 +200,28 @@ export class OpportunityEngineService {
       dispositionSummary[evaluation.disposition] += 1;
     }
 
+    const diagnostics = {
+      fetched: input.matrix.rows.length,
+      normalized: input.matrix.rows.filter((row) => this.hasMarketSignal(row))
+        .length,
+      canonicalMatched: tradableRows.length,
+      pairable: allEvaluations.filter(
+        (evaluation) =>
+          evaluation.strictTradable.matched &&
+          evaluation.preScoreGate.passed &&
+          evaluation.pairability.status !== 'blocked',
+      ).length,
+      candidate: allEvaluations.filter(
+        (evaluation) => evaluation.disposition !== 'rejected',
+      ).length,
+      eligible: allEvaluations.filter(
+        (evaluation) => evaluation.eligibility.eligible,
+      ).length,
+      surfaced: sortedEvaluations.filter(
+        (evaluation) => evaluation.surfaceTier !== 'rejected',
+      ).length,
+    } satisfies OpportunityFunnelMetricsDto;
+
     return {
       generatedAt: input.matrix.generatedAt,
       category: input.matrix.category,
@@ -169,6 +235,7 @@ export class OpportunityEngineService {
       dispositionSummary,
       antiFakeCounters:
         this.opportunityAntiFakeService.createCounters(allEvaluations),
+      diagnostics,
       evaluations: sortedEvaluations,
     };
   }
@@ -181,6 +248,11 @@ export class OpportunityEngineService {
     readonly scheme?: CompiledScheme;
   }): OpportunityEvaluationDto {
     const baseReasonCodes: OpportunityReasonCode[] = [];
+    const strictTradable = this.buildStrictTradableMatch(
+      input.matrix,
+      input.buyRow,
+      input.sellRow,
+    );
     const usesFallbackData =
       input.buyRow.fetchMode === 'fallback' ||
       input.sellRow.fetchMode === 'fallback';
@@ -193,6 +265,7 @@ export class OpportunityEngineService {
         sellSignalPrice: input.sellRow.bid ?? input.sellRow.ask ?? 0,
         antiFakeAssessment: this.createEmptyAntiFakeAssessment(),
         reasonCodes: ['buy_source_has_no_ask'],
+        strictTradable,
       });
     }
 
@@ -205,6 +278,7 @@ export class OpportunityEngineService {
         sellSignalPrice: 0,
         antiFakeAssessment: this.createEmptyAntiFakeAssessment(),
         reasonCodes: ['sell_source_has_no_exit_signal'],
+        strictTradable,
       });
     }
 
@@ -221,6 +295,28 @@ export class OpportunityEngineService {
       );
     }
 
+    if (!strictTradable.buyKey || !strictTradable.sellKey) {
+      return this.buildRejectedEvaluation({
+        ...input,
+        buyCost: input.buyRow.ask,
+        sellSignalPrice,
+        antiFakeAssessment: this.createEmptyAntiFakeAssessment(),
+        reasonCodes: [...baseReasonCodes, 'strict_variant_key_missing'],
+        strictTradable,
+      });
+    }
+
+    if (!strictTradable.matched) {
+      return this.buildRejectedEvaluation({
+        ...input,
+        buyCost: input.buyRow.ask,
+        sellSignalPrice,
+        antiFakeAssessment: this.createEmptyAntiFakeAssessment(),
+        reasonCodes: [...baseReasonCodes, 'strict_variant_key_mismatch'],
+        strictTradable,
+      });
+    }
+
     const expectedExitPrice =
       this.opportunityEnginePolicyService.getExpectedExitPrice(
         input.matrix.category,
@@ -234,6 +330,7 @@ export class OpportunityEngineService {
         sellSignalPrice,
         antiFakeAssessment: this.createEmptyAntiFakeAssessment(),
         reasonCodes: [...baseReasonCodes, 'sell_source_has_no_exit_signal'],
+        strictTradable,
       });
     }
 
@@ -243,7 +340,7 @@ export class OpportunityEngineService {
       rawSpread / Math.max(0.0001, buyCost),
     );
 
-    if (rawSpread <= 0) {
+    if (rawSpread < -POST_FEE_EDGE_EPSILON) {
       baseReasonCodes.push('non_positive_raw_spread');
     }
 
@@ -253,14 +350,43 @@ export class OpportunityEngineService {
     const sellFeeRate = this.opportunityEnginePolicyService.getSellFeeRate(
       input.sellRow.source,
     );
+    const normalizedBuyCostAfterFees = buyCost * (1 + buyFeeRate);
+    const normalizedExitAfterFees = expectedExitPrice * (1 - sellFeeRate);
     const feesAdjustedSpread = this.roundCurrency(
-      expectedExitPrice * (1 - sellFeeRate) - buyCost * (1 + buyFeeRate),
+      normalizedExitAfterFees - normalizedBuyCostAfterFees,
     );
+    const postFeeEdgeStatus = this.compareNormalizedEdge({
+      exitAfterFees: normalizedExitAfterFees,
+      buyCostAfterFees: normalizedBuyCostAfterFees,
+    });
     const backupConfirmation = this.resolveBackupConfirmation(
       input.backupRows,
       buyCost,
       sellSignalPrice,
     );
+    const preScoreGate = this.evaluatePreScoreGate({
+      matrix: input.matrix,
+      buyRow: input.buyRow,
+      sellRow: input.sellRow,
+      backupRows: input.backupRows,
+      buyCost,
+      sellSignalPrice,
+    });
+
+    if (!preScoreGate.passed) {
+      return this.buildRejectedEvaluation({
+        ...input,
+        buyCost,
+        sellSignalPrice,
+        antiFakeAssessment: this.createEmptyAntiFakeAssessment(),
+        reasonCodes: [
+          ...baseReasonCodes,
+          ...preScoreGate.reasonCodes,
+        ] satisfies OpportunityReasonCode[],
+        strictTradable,
+        preScoreGate,
+      });
+    }
     const antiFakeAssessment = this.opportunityAntiFakeService.assess({
       matrix: input.matrix,
       buyRow: input.buyRow,
@@ -280,6 +406,8 @@ export class OpportunityEngineService {
           ...baseReasonCodes,
           ...antiFakeAssessment.reasonCodes,
         ] satisfies OpportunityReasonCode[],
+        strictTradable,
+        preScoreGate,
       });
     }
 
@@ -318,21 +446,38 @@ export class OpportunityEngineService {
       baseReasonCodes.push('backup_reference_outlier');
     }
 
-    const finalConfidence =
-      this.opportunityEnginePolicyService.adjustConfidenceForAntiFake({
-        baseConfidence:
-          this.opportunityEnginePolicyService.computeFinalConfidence({
-            buyRow: input.buyRow,
-            sellRow: input.sellRow,
-            penalties,
-          }),
+    const componentScoresWithFinalConfidence =
+      this.opportunityEnginePolicyService.buildComponentScores({
+        matrix: input.matrix,
+        buyRow: input.buyRow,
+        sellRow: input.sellRow,
+        penalties,
         antiFakeAssessment,
+        preScoreGate,
+        backupConfirmationBoost: backupConfirmation?.boost ?? 0,
       });
+    const componentScores = this.extractComponentScores(
+      componentScoresWithFinalConfidence,
+    );
+    const finalConfidence = componentScoresWithFinalConfidence.finalConfidence;
+    const execution = this.opportunityEnginePolicyService.buildExecutionBreakdown({
+      category: input.matrix.category,
+      buyRow: input.buyRow,
+      sellRow: input.sellRow,
+      buyPrice: buyCost,
+      realizedSellPrice: expectedExitPrice,
+      buyFeeRate,
+      sellFeeRate,
+      penalties,
+      antiFakeAssessment,
+      finalConfidence,
+    });
     const classification =
       this.opportunityEnginePolicyService.classifyOpportunity({
         category: input.matrix.category,
-        expectedNetProfit: feesAdjustedSpread,
+        expectedNetProfit: execution.expectedNet,
         rawSpreadPercent,
+        postFeeEdgeStatus,
         finalConfidence,
         antiFakeAssessment,
         penalties,
@@ -347,6 +492,36 @@ export class OpportunityEngineService {
       reasonCodes: classification.reasonCodes,
       schemeBlocked: false,
     });
+    const eligibility = this.opportunityEnginePolicyService.evaluateEligibility({
+      category: input.matrix.category,
+      buyRow: input.buyRow,
+      sellRow: input.sellRow,
+      disposition: classification.disposition,
+      pairabilityStatus: pairability.status,
+      componentScores,
+      finalConfidence,
+      expectedNetProfit: execution.expectedNet,
+      rawSpreadPercent,
+      strictTradable,
+      preScoreGate,
+      backupConfirmed: backupConfirmation?.supported ?? false,
+      reasonCodes: classification.reasonCodes,
+    });
+    const reasonCodes = [
+      ...classification.reasonCodes,
+      ...(eligibility.steamSnapshotDemoted
+        ? (['steam_snapshot_pair_demoted'] satisfies OpportunityReasonCode[])
+        : []),
+    ] satisfies OpportunityReasonCode[];
+    const riskReasons = this.opportunityEnginePolicyService.buildRiskReasons({
+      buyRow: input.buyRow,
+      sellRow: input.sellRow,
+      penalties,
+      preScoreGate,
+      strictTradable,
+      reasonCodes,
+      surfaceTier: eligibility.surfaceTier,
+    });
     const evaluation = this.buildEvaluation({
       matrix: input.matrix,
       buyRow: input.buyRow,
@@ -358,12 +533,19 @@ export class OpportunityEngineService {
       rawSpread,
       rawSpreadPercent,
       feesAdjustedSpread,
+      execution,
+      componentScores,
       finalConfidence,
       penalties,
       antiFakeAssessment,
       disposition: classification.disposition,
+      surfaceTier: eligibility.surfaceTier,
       riskClass: classification.riskClass,
-      reasonCodes: classification.reasonCodes,
+      reasonCodes,
+      riskReasons,
+      strictTradable,
+      preScoreGate,
+      eligibility,
       pairability,
       ...(backupConfirmation?.supported
         ? {
@@ -392,12 +574,19 @@ export class OpportunityEngineService {
     readonly rawSpread: number;
     readonly rawSpreadPercent: number;
     readonly feesAdjustedSpread: number;
+    readonly execution: OpportunityExecutionBreakdownDto;
+    readonly componentScores: OpportunityComponentScoresDto;
     readonly finalConfidence: number;
     readonly penalties: OpportunityPenaltyBreakdownDto;
     readonly antiFakeAssessment: AntiFakeAssessment;
     readonly disposition: OpportunityEvaluationDisposition;
+    readonly surfaceTier: OpportunitySurfaceTier;
     readonly riskClass: OpportunityEngineRiskClass;
     readonly reasonCodes: readonly OpportunityReasonCode[];
+    readonly riskReasons: readonly OpportunityRiskReasonDto[];
+    readonly strictTradable: OpportunityStrictTradableMatchDto;
+    readonly preScoreGate: OpportunityPreScoreGateDto;
+    readonly eligibility: OpportunityEligibilityDto;
     readonly pairability: OpportunityPairabilityDto;
     readonly backupConfirmation?: {
       readonly source: OpportunitySourceLegDto['source'];
@@ -416,13 +605,14 @@ export class OpportunityEngineService {
       category: input.matrix.category,
       buyRow: input.buyRow,
       sellRow: input.sellRow,
-      expectedNetProfit: input.feesAdjustedSpread,
+      expectedNetProfit: input.execution.expectedNet,
       rawSpreadPercent: input.rawSpreadPercent,
       finalConfidence: input.finalConfidence,
       penalties: input.penalties,
       antiFakeAssessment: input.antiFakeAssessment,
       pairability: input.pairability,
       disposition: input.disposition,
+      surfaceTier: input.surfaceTier,
     });
 
     return {
@@ -432,8 +622,10 @@ export class OpportunityEngineService {
         sellSource: input.sellRow.source,
       }),
       disposition: input.disposition,
+      surfaceTier: input.surfaceTier,
       reasonCodes,
       riskClass: input.riskClass,
+      riskReasons: input.riskReasons,
       category: input.matrix.category,
       canonicalItemId: input.matrix.canonicalItemId,
       canonicalDisplayName: input.matrix.canonicalDisplayName,
@@ -445,14 +637,19 @@ export class OpportunityEngineService {
       rawSpread: input.rawSpread,
       rawSpreadPercent: input.rawSpreadPercent,
       feesAdjustedSpread: input.feesAdjustedSpread,
-      expectedNetProfit: input.feesAdjustedSpread,
+      expectedNetProfit: input.execution.expectedNet,
       expectedExitPrice: input.expectedExitPrice,
       estimatedSellFeeRate: input.sellFeeRate,
       buyCost: input.buyCost,
       sellSignalPrice: input.sellSignalPrice,
+      componentScores: input.componentScores,
+      execution: input.execution,
       finalConfidence: input.finalConfidence,
       penalties: input.penalties,
       antiFakeAssessment: input.antiFakeAssessment,
+      strictTradable: input.strictTradable,
+      preScoreGate: input.preScoreGate,
+      eligibility: input.eligibility,
       validation,
       pairability: input.pairability,
       explainability: {
@@ -474,8 +671,21 @@ export class OpportunityEngineService {
     readonly sellSignalPrice: number;
     readonly antiFakeAssessment: AntiFakeAssessment;
     readonly reasonCodes: readonly OpportunityReasonCode[];
+    readonly strictTradable?: OpportunityStrictTradableMatchDto;
+    readonly preScoreGate?: OpportunityPreScoreGateDto;
     readonly scheme?: CompiledScheme;
   }): OpportunityEvaluationDto {
+    const strictTradable =
+      input.strictTradable ??
+      this.buildStrictTradableMatch(input.matrix, input.buyRow, input.sellRow);
+    const preScoreGate =
+      input.preScoreGate ??
+      this.createDefaultPreScoreGate(input.reasonCodes);
+    const componentScores = this.createDefaultComponentScores();
+    const execution = this.createDefaultExecutionBreakdown(input.buyCost);
+    const reasonCodes = this.uniqueReasonCodes(input.reasonCodes);
+    const eligibility = this.createRejectedEligibility(reasonCodes);
+
     return this.buildEvaluation({
       matrix: input.matrix,
       buyRow: input.buyRow,
@@ -487,6 +697,8 @@ export class OpportunityEngineService {
       rawSpread: 0,
       rawSpreadPercent: 0,
       feesAdjustedSpread: 0,
+      execution,
+      componentScores,
       finalConfidence: 0,
       penalties: {
         freshnessPenalty: 0,
@@ -499,13 +711,34 @@ export class OpportunityEngineService {
       },
       antiFakeAssessment: input.antiFakeAssessment,
       disposition: 'rejected',
+      surfaceTier: 'rejected',
       riskClass: 'extreme',
-      reasonCodes: input.reasonCodes,
+      reasonCodes,
+      riskReasons: this.opportunityEnginePolicyService.buildRiskReasons({
+        buyRow: input.buyRow,
+        sellRow: input.sellRow,
+        penalties: {
+          freshnessPenalty: 0,
+          liquidityPenalty: 0,
+          stalePenalty: 0,
+          categoryPenalty: 0,
+          sourceDisagreementPenalty: 0,
+          backupConfirmationBoost: 0,
+          totalPenalty: 0,
+        },
+        preScoreGate,
+        strictTradable,
+        reasonCodes,
+        surfaceTier: 'rejected',
+      }),
+      strictTradable,
+      preScoreGate,
+      eligibility,
       pairability: this.buildPairability({
         buyRow: input.buyRow,
         sellRow: input.sellRow,
-        reasonCodes: input.reasonCodes,
-        schemeBlocked: input.reasonCodes.some((reasonCode) =>
+        reasonCodes,
+        schemeBlocked: reasonCodes.some((reasonCode) =>
           reasonCode.startsWith('scheme_'),
         ),
       }),
@@ -651,12 +884,23 @@ export class OpportunityEngineService {
       rawSpread: evaluation.rawSpread,
       rawSpreadPercent: evaluation.rawSpreadPercent,
       feesAdjustedSpread: evaluation.feesAdjustedSpread,
+      execution: evaluation.execution,
+      componentScores: evaluation.componentScores,
       finalConfidence: evaluation.finalConfidence,
       penalties: evaluation.penalties,
       antiFakeAssessment: evaluation.antiFakeAssessment,
       disposition: 'rejected',
+      surfaceTier: 'rejected',
       riskClass: evaluation.riskClass,
       reasonCodes: [...evaluation.reasonCodes, ...schemeReasonCodes],
+      riskReasons: evaluation.riskReasons,
+      strictTradable: evaluation.strictTradable,
+      preScoreGate: evaluation.preScoreGate,
+      eligibility: {
+        ...evaluation.eligibility,
+        surfaceTier: 'rejected',
+        eligible: false,
+      },
       pairability,
       ...(evaluation.backupConfirmation
         ? { backupConfirmation: evaluation.backupConfirmation }
@@ -686,6 +930,7 @@ export class OpportunityEngineService {
     const warningReasons = new Set<OpportunityReasonCode>([
       'sell_source_requires_listed_exit',
       'steam_snapshot_fallback_used',
+      'steam_snapshot_pair_demoted',
       'stale_snapshot_used',
       'backup_reference_outlier',
       'freshness_penalty_elevated',
@@ -704,6 +949,11 @@ export class OpportunityEngineService {
       'INSUFFICIENT_LIQUIDITY',
       'FROZEN_MARKET',
       'NO_CONFIRMING_SOURCE',
+      'near_equal_after_fees',
+      'strict_variant_key_missing',
+      'strict_variant_key_mismatch',
+      'pre_score_outlier_rejected',
+      'insufficient_comparable_sources',
     ]);
     const warned =
       input.pairability.status !== 'pairable' ||
@@ -757,6 +1007,23 @@ export class OpportunityEngineService {
     };
   }
 
+  private compareNormalizedEdge(input: {
+    readonly exitAfterFees: number;
+    readonly buyCostAfterFees: number;
+  }): 'positive' | 'near_equal' | 'non_positive' {
+    const delta = input.exitAfterFees - input.buyCostAfterFees;
+
+    if (delta < -POST_FEE_EDGE_EPSILON) {
+      return 'non_positive';
+    }
+
+    if (Math.abs(delta) <= POST_FEE_EDGE_EPSILON) {
+      return 'near_equal';
+    }
+
+    return 'positive';
+  }
+
   private buildRankingInputs(input: {
     readonly category: MergedMarketMatrixDto['category'];
     readonly buyRow: MergedMarketMatrixRowDto;
@@ -768,6 +1035,7 @@ export class OpportunityEngineService {
     readonly antiFakeAssessment: AntiFakeAssessment;
     readonly pairability: OpportunityPairabilityDto;
     readonly disposition: OpportunityEvaluationDisposition;
+    readonly surfaceTier: OpportunitySurfaceTier;
   }): OpportunityRankingInputsDto {
     const categoryPolicy = OPPORTUNITY_CATEGORY_POLICIES[input.category];
     const freshnessScore = this.clampScore(
@@ -844,6 +1112,7 @@ export class OpportunityEngineService {
           );
 
     return {
+      surfaceTierRank: this.rankSurfaceTier(input.surfaceTier),
       dispositionRank: this.rankDisposition(input.disposition),
       bucketBase,
       qualityScore: this.roundScore(qualityScore),
@@ -889,6 +1158,504 @@ export class OpportunityEngineService {
       marketSanityRisk: 0,
       confirmationScore: 0,
       reasonCodes: [],
+    };
+  }
+
+  private createDefaultComponentScores(): OpportunityComponentScoresDto {
+    return {
+      mappingConfidence: 0,
+      priceConfidence: 0,
+      liquidityConfidence: 0,
+      freshnessConfidence: 0,
+      sourceReliabilityConfidence: 0,
+      variantMatchConfidence: 0,
+    };
+  }
+
+  private createDefaultExecutionBreakdown(
+    buyPrice: number,
+  ): OpportunityExecutionBreakdownDto {
+    return {
+      realizedSellPrice: 0,
+      buyPrice: this.roundCurrency(buyPrice),
+      fees: 0,
+      slippagePenalty: 0,
+      liquidityPenalty: 0,
+      uncertaintyPenalty: 0,
+      expectedNet: 0,
+    };
+  }
+
+  private extractComponentScores(input: OpportunityComponentScoresDto & {
+    readonly finalConfidence: number;
+  }): OpportunityComponentScoresDto {
+    return {
+      mappingConfidence: input.mappingConfidence,
+      priceConfidence: input.priceConfidence,
+      liquidityConfidence: input.liquidityConfidence,
+      freshnessConfidence: input.freshnessConfidence,
+      sourceReliabilityConfidence: input.sourceReliabilityConfidence,
+      variantMatchConfidence: input.variantMatchConfidence,
+    };
+  }
+
+  private createDefaultPreScoreGate(
+    reasonCodes: readonly OpportunityReasonCode[] = [],
+  ): OpportunityPreScoreGateDto {
+    return {
+      passed: false,
+      comparableCount: 0,
+      rejectedByStale: reasonCodes.includes('stale_pre_score_rejection'),
+      rejectedByMedian: reasonCodes.includes('source_median_outlier_rejected'),
+      rejectedByConsensus: reasonCodes.includes(
+        'cross_source_consensus_outlier_rejected',
+      ),
+      rejectedByComparableCount: reasonCodes.includes(
+        'insufficient_comparable_sources',
+      ),
+      reasonCodes,
+    };
+  }
+
+  private createRejectedEligibility(
+    reasonCodes: readonly OpportunityReasonCode[],
+  ): OpportunityEligibilityDto {
+    return {
+      surfaceTier: 'rejected',
+      eligible: false,
+      requiresReferenceSupport: false,
+      steamSnapshotDemoted: false,
+      ...(this.resolveRejectedBlockerReason(reasonCodes)
+        ? { blockerReason: this.resolveRejectedBlockerReason(reasonCodes)! }
+        : {}),
+    };
+  }
+
+  private resolveRejectedBlockerReason(
+    reasonCodes: readonly OpportunityReasonCode[],
+  ): OpportunityBlockerReason | undefined {
+    if (reasonCodes.includes('strict_variant_key_mismatch')) {
+      return 'strict_variant_key_mismatch';
+    }
+
+    if (reasonCodes.includes('strict_variant_key_missing')) {
+      return 'strict_variant_key_missing';
+    }
+
+    if (
+      reasonCodes.includes('pre_score_outlier_rejected') ||
+      reasonCodes.includes('source_median_outlier_rejected') ||
+      reasonCodes.includes('cross_source_consensus_outlier_rejected')
+    ) {
+      return 'pre_score_outlier';
+    }
+
+    if (reasonCodes.includes('insufficient_comparable_sources')) {
+      return 'insufficient_comparables';
+    }
+
+    if (
+      reasonCodes.includes('stale_pre_score_rejection') ||
+      reasonCodes.includes('STALE_SOURCE_STATE')
+    ) {
+      return 'stale_sources';
+    }
+
+    if (reasonCodes.includes('sell_source_requires_listed_exit')) {
+      return 'listed_exit_only';
+    }
+
+    if (
+      reasonCodes.includes('steam_snapshot_fallback_used') ||
+      reasonCodes.includes('steam_snapshot_pair_demoted')
+    ) {
+      return 'steam_snapshot_pair';
+    }
+
+    if (reasonCodes.includes('stale_snapshot_used')) {
+      return 'fallback_data';
+    }
+
+    return undefined;
+  }
+
+  private buildStrictTradableMatch(
+    matrix: MergedMarketMatrixDto,
+    buyRow: MergedMarketMatrixRowDto,
+    sellRow: MergedMarketMatrixRowDto,
+  ): OpportunityStrictTradableMatchDto {
+    const buyKey = this.buildStrictTradableKey(matrix, buyRow);
+    const sellKey = this.buildStrictTradableKey(matrix, sellRow);
+
+    return {
+      matched:
+        buyKey !== undefined &&
+        sellKey !== undefined &&
+        this.strictTradableKeysMatch({
+          matrix,
+          buyRow,
+          sellRow,
+          buyKey,
+          sellKey,
+        }),
+      ...(buyKey ? { buyKey } : {}),
+      ...(sellKey ? { sellKey } : {}),
+    };
+  }
+
+  private buildStrictTradableKey(
+    matrix: MergedMarketMatrixDto,
+    row: MergedMarketMatrixRowDto,
+  ): OpportunityStrictTradableKeyDto | undefined {
+    const condition = this.normalizeStrictConditionToken(
+      row.identity?.condition ??
+        matrix.variantIdentity.exterior ??
+        this.resolveDefaultStrictCondition(matrix),
+    );
+
+    if (!condition) {
+      return undefined;
+    }
+
+    const phaseFamily =
+      matrix.variantIdentity.phaseFamily === 'gamma-doppler'
+        ? 'gamma'
+        : matrix.variantIdentity.phaseFamily;
+    const phaseValue = this.normalizeStrictPhaseToken(
+      row.identity?.phase ?? matrix.variantIdentity.phaseLabel ?? 'standard',
+    );
+    const patternSensitiveBucket = matrix.variantIdentity.patternRelevant
+      ? row.identity?.paintSeed !== undefined
+        ? `seed-${row.identity.paintSeed}`
+        : 'pattern-unknown'
+      : 'pattern-none';
+    const floatBucket = matrix.variantIdentity.floatRelevant
+      ? this.resolveFloatBucket(row, condition)
+      : 'float-none';
+    const key = [
+      matrix.canonicalItemId,
+      condition,
+      `stattrak-${row.identity?.isStatTrak ?? matrix.variantIdentity.stattrak ? 'yes' : 'no'}`,
+      `souvenir-${row.identity?.isSouvenir ?? matrix.variantIdentity.souvenir ? 'yes' : 'no'}`,
+      `vanilla-${matrix.variantIdentity.isVanilla ? 'yes' : 'no'}`,
+      `${phaseFamily}-${phaseValue ?? 'phase-unknown'}`,
+      patternSensitiveBucket,
+      floatBucket,
+    ].join('|');
+
+    return {
+      key,
+      condition,
+      stattrak: row.identity?.isStatTrak ?? matrix.variantIdentity.stattrak,
+      souvenir: row.identity?.isSouvenir ?? matrix.variantIdentity.souvenir,
+      vanilla: matrix.variantIdentity.isVanilla,
+      phase: `${phaseFamily}-${phaseValue ?? 'phase-unknown'}`,
+      patternSensitiveBucket,
+      floatBucket,
+    };
+  }
+
+  private resolveFloatBucket(
+    row: MergedMarketMatrixRowDto,
+    condition: string,
+  ): string {
+    if (row.identity?.wearFloat === undefined) {
+      return `float-${condition}`;
+    }
+
+    const wearFloat = row.identity.wearFloat;
+
+    if (wearFloat <= 0.03) {
+      return 'float-00-003';
+    }
+
+    if (wearFloat <= 0.07) {
+      return 'float-003-007';
+    }
+
+    if (wearFloat <= 0.15) {
+      return 'float-007-015';
+    }
+
+    if (wearFloat <= 0.38) {
+      return 'float-015-038';
+    }
+
+    if (wearFloat <= 0.45) {
+      return 'float-038-045';
+    }
+
+    return 'float-045-plus';
+  }
+
+  private resolveDefaultStrictCondition(
+    matrix: MergedMarketMatrixDto,
+  ): string | undefined {
+    if (matrix.category === 'CASE' || matrix.category === 'CAPSULE') {
+      return 'default';
+    }
+
+    if (matrix.variantIdentity.isVanilla) {
+      return 'default';
+    }
+
+    if (!matrix.variantIdentity.floatRelevant && !matrix.variantIdentity.exterior) {
+      return 'default';
+    }
+
+    return undefined;
+  }
+
+  private normalizeKeyToken(value?: string): string | undefined {
+    return value
+      ? value
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/gu, '-')
+          .replace(/^-+|-+$/gu, '')
+      : undefined;
+  }
+
+  private normalizeStrictConditionToken(value?: string): string | undefined {
+    const normalizedExterior =
+      this.aliasNormalizationService.normalizeExterior(value);
+
+    return this.normalizeKeyToken(normalizedExterior ?? value);
+  }
+
+  private normalizeStrictPhaseToken(value?: string): string | undefined {
+    if (!value || value === 'standard') {
+      return this.normalizeKeyToken(value);
+    }
+
+    const phaseLabel = this.aliasNormalizationService.normalizePhaseHint(value);
+
+    return this.normalizeKeyToken(phaseLabel ?? value);
+  }
+
+  private strictTradableKeysMatch(input: {
+    readonly matrix: MergedMarketMatrixDto;
+    readonly buyRow: MergedMarketMatrixRowDto;
+    readonly sellRow: MergedMarketMatrixRowDto;
+    readonly buyKey: OpportunityStrictTradableKeyDto;
+    readonly sellKey: OpportunityStrictTradableKeyDto;
+  }): boolean {
+    if (
+      input.buyKey.condition !== input.sellKey.condition ||
+      input.buyKey.stattrak !== input.sellKey.stattrak ||
+      input.buyKey.souvenir !== input.sellKey.souvenir ||
+      input.buyKey.vanilla !== input.sellKey.vanilla ||
+      input.buyKey.phase !== input.sellKey.phase
+    ) {
+      return false;
+    }
+
+    if (!this.patternSignalsMatch(input)) {
+      return false;
+    }
+
+    if (!this.floatSignalsMatch(input)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  private patternSignalsMatch(input: {
+    readonly matrix: MergedMarketMatrixDto;
+    readonly buyRow: MergedMarketMatrixRowDto;
+    readonly sellRow: MergedMarketMatrixRowDto;
+  }): boolean {
+    if (!input.matrix.variantIdentity.patternRelevant) {
+      return true;
+    }
+
+    const buySeed = input.buyRow.identity?.paintSeed;
+    const sellSeed = input.sellRow.identity?.paintSeed;
+
+    if (buySeed !== undefined && sellSeed !== undefined) {
+      return buySeed === sellSeed;
+    }
+
+    if (buySeed === undefined && sellSeed === undefined) {
+      return true;
+    }
+
+    return this.isAggregateIdentityRow(
+      buySeed === undefined ? input.buyRow : input.sellRow,
+    );
+  }
+
+  private floatSignalsMatch(input: {
+    readonly matrix: MergedMarketMatrixDto;
+    readonly buyRow: MergedMarketMatrixRowDto;
+    readonly sellRow: MergedMarketMatrixRowDto;
+    readonly buyKey: OpportunityStrictTradableKeyDto;
+    readonly sellKey: OpportunityStrictTradableKeyDto;
+  }): boolean {
+    if (!input.matrix.variantIdentity.floatRelevant) {
+      return true;
+    }
+
+    const buyFloat = input.buyRow.identity?.wearFloat;
+    const sellFloat = input.sellRow.identity?.wearFloat;
+
+    if (buyFloat !== undefined && sellFloat !== undefined) {
+      return input.buyKey.floatBucket === input.sellKey.floatBucket;
+    }
+
+    if (buyFloat === undefined && sellFloat === undefined) {
+      return true;
+    }
+
+    return this.isAggregateIdentityRow(
+      buyFloat === undefined ? input.buyRow : input.sellRow,
+    );
+  }
+
+  private isAggregateIdentityRow(row: MergedMarketMatrixRowDto): boolean {
+    const identity = row.identity;
+
+    if (!identity) {
+      return row.fetchMode !== 'live';
+    }
+
+    const lacksPatternAndFloatSignals =
+      identity.paintSeed === undefined && identity.wearFloat === undefined;
+
+    if (!lacksPatternAndFloatSignals) {
+      return false;
+    }
+
+    if (row.fetchMode !== 'live') {
+      return true;
+    }
+
+    if (identity.hasSellerMetadata || identity.hasScmHints) {
+      return false;
+    }
+
+    if (AGGREGATE_IDENTITY_SOURCES.has(row.source)) {
+      return true;
+    }
+
+    return (row.listedQty ?? 0) !== 1;
+  }
+
+  private evaluatePreScoreGate(input: {
+    readonly matrix: MergedMarketMatrixDto;
+    readonly buyRow: MergedMarketMatrixRowDto;
+    readonly sellRow: MergedMarketMatrixRowDto;
+    readonly backupRows: readonly MergedMarketMatrixRowDto[];
+    readonly buyCost: number;
+    readonly sellSignalPrice: number;
+  }): OpportunityPreScoreGateDto {
+    const comparableRows = input.matrix.rows.filter(
+      (row) =>
+        row.fetchMode !== 'backup' &&
+        row.freshness.usable &&
+        this.resolveComparablePrice(row) !== undefined,
+    );
+    const comparablePrices = comparableRows
+      .map((row) => this.resolveComparablePrice(row))
+      .filter((value): value is number => value !== undefined)
+      .sort((left, right) => left - right);
+    const comparableCount = comparablePrices.length;
+    const sourceMedian =
+      comparablePrices.length > 0
+        ? this.median(comparablePrices)
+        : undefined;
+    const crossSourceConsensus =
+      input.matrix.conflict.consensusAsk ?? sourceMedian;
+    const pairMultiple =
+      input.sellSignalPrice / Math.max(0.0001, input.buyCost);
+    const rejectedByStale =
+      !input.buyRow.freshness.usable || !input.sellRow.freshness.usable;
+    const rejectedByComparableCount =
+      pairMultiple >= 1.22 &&
+      comparableCount < 3 &&
+      input.backupRows.length === 0;
+    const rejectedByMedian =
+      sourceMedian !== undefined &&
+      pairMultiple >= 1.12 &&
+      (input.buyCost < sourceMedian * 0.72 ||
+        input.sellSignalPrice > sourceMedian * 1.34);
+    const rejectedByConsensus =
+      crossSourceConsensus !== undefined &&
+      pairMultiple >= 1.12 &&
+      input.sellSignalPrice > crossSourceConsensus * 1.3;
+    const reasonCodes: OpportunityReasonCode[] = [];
+
+    if (rejectedByStale) {
+      reasonCodes.push('stale_pre_score_rejection');
+    }
+
+    if (rejectedByMedian) {
+      reasonCodes.push('source_median_outlier_rejected');
+    }
+
+    if (rejectedByConsensus) {
+      reasonCodes.push('cross_source_consensus_outlier_rejected');
+    }
+
+    if (rejectedByComparableCount) {
+      reasonCodes.push('insufficient_comparable_sources');
+    }
+
+    if (
+      rejectedByMedian ||
+      rejectedByConsensus ||
+      rejectedByComparableCount
+    ) {
+      reasonCodes.unshift('pre_score_outlier_rejected');
+    }
+
+    return {
+      passed: !rejectedByStale && !reasonCodes.length,
+      comparableCount,
+      ...(sourceMedian !== undefined ? { sourceMedian } : {}),
+      ...(crossSourceConsensus !== undefined ? { crossSourceConsensus } : {}),
+      rejectedByStale,
+      rejectedByMedian,
+      rejectedByConsensus,
+      rejectedByComparableCount,
+      reasonCodes,
+    };
+  }
+
+  private resolveComparablePrice(
+    row: MergedMarketMatrixRowDto,
+  ): number | undefined {
+    return row.bid ?? row.ask;
+  }
+
+  private median(values: readonly number[]): number {
+    const middleIndex = Math.floor(values.length / 2);
+
+    if (values.length % 2 === 1) {
+      return values[middleIndex]!;
+    }
+
+    return (values[middleIndex - 1]! + values[middleIndex]!) / 2;
+  }
+
+  private hasMarketSignal(row: MergedMarketMatrixRowDto): boolean {
+    return (
+      row.ask !== undefined ||
+      row.bid !== undefined ||
+      (row.listedQty !== undefined && row.listedQty > 0)
+    );
+  }
+
+  private createEmptyFunnelMetrics(): OpportunityFunnelMetricsDto {
+    return {
+      fetched: 0,
+      normalized: 0,
+      canonicalMatched: 0,
+      pairable: 0,
+      candidate: 0,
+      eligible: 0,
+      surfaced: 0,
     };
   }
 
@@ -980,6 +1747,13 @@ export class OpportunityEngineService {
     left: OpportunityEvaluationDto,
     right: OpportunityEvaluationDto,
   ): number {
+    const surfaceTierRankDifference =
+      left.rankingInputs.surfaceTierRank - right.rankingInputs.surfaceTierRank;
+
+    if (surfaceTierRankDifference !== 0) {
+      return surfaceTierRankDifference;
+    }
+
     const dispositionRankDifference =
       left.rankingInputs.dispositionRank - right.rankingInputs.dispositionRank;
 
@@ -1016,6 +1790,21 @@ export class OpportunityEngineService {
         return 100;
       case 'rejected':
         return 0;
+    }
+  }
+
+  private rankSurfaceTier(surfaceTier: OpportunitySurfaceTier): number {
+    switch (surfaceTier) {
+      case 'tradable':
+        return 0;
+      case 'reference_backed':
+        return 1;
+      case 'near_eligible':
+        return 2;
+      case 'research':
+        return 3;
+      case 'rejected':
+        return 4;
     }
   }
 

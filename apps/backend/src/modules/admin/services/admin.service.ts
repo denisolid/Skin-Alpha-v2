@@ -335,10 +335,13 @@ export class AdminService {
 
   rescanOpportunities(
     user: Pick<AuthUserRecord, 'role'>,
+    limit?: number,
   ): Promise<OpportunityRescanResultDto> {
     this.assertAdminUser(user);
 
-    return this.opportunityRescanService.rescanAndPersist();
+    return this.opportunityRescanService.rescanAndPersist({
+      ...(limit ? { variantLimit: limit } : {}),
+    });
   }
 
   bootstrapCatalog(
@@ -519,6 +522,7 @@ export class AdminService {
     const timestamps = {
       skinport: now,
       csfloat: new Date(now.getTime() - 2 * 60 * 1000),
+      dmarket: new Date(now.getTime() - 3 * 60 * 1000),
       'steam-snapshot': new Date(now.getTime() - 20 * 60 * 1000),
       'backup-aggregator': new Date(now.getTime() - 5 * 60 * 1000),
     } as const;
@@ -633,6 +637,59 @@ export class AdminService {
           liquidityScore: 0.93,
         }),
       ],
+      dmarket: [
+        this.createMarketState(items[0]!, timestamps.dmarket, {
+          source: 'dmarket',
+          lowestAskMinor: 8250,
+          average24hMinor: 8180,
+          lastTradeMinor: 8160,
+          listingCount: 11,
+          saleCount24h: 5,
+          confidence: 0.86,
+          liquidityScore: 0.69,
+        }),
+        this.createMarketState(items[1]!, timestamps.dmarket, {
+          source: 'dmarket',
+          lowestAskMinor: 72100,
+          average24hMinor: 71550,
+          lastTradeMinor: 71300,
+          listingCount: 5,
+          saleCount24h: 2,
+          confidence: 0.79,
+          liquidityScore: 0.45,
+        }),
+        this.createMarketState(items[2]!, timestamps.dmarket, {
+          source: 'dmarket',
+          lowestAskMinor: 54800,
+          average24hMinor: 54250,
+          lastTradeMinor: 54100,
+          listingCount: 4,
+          saleCount24h: 2,
+          confidence: 0.77,
+          liquidityScore: 0.41,
+        }),
+        this.createMarketState(items[3]!, timestamps.dmarket, {
+          source: 'dmarket',
+          lowestAskMinor: 338,
+          average24hMinor: 332,
+          lastTradeMinor: 330,
+          listingCount: 96,
+          saleCount24h: 39,
+          confidence: 0.92,
+          liquidityScore: 0.88,
+        }),
+        this.createMarketState(items[4]!, timestamps.dmarket, {
+          source: 'dmarket',
+          lowestAskMinor: 326,
+          average24hMinor: 321,
+          lastTradeMinor: 319,
+          listingCount: 88,
+          saleCount24h: 34,
+          confidence: 0.9,
+          liquidityScore: 0.84,
+        }),
+      ],
+      waxpeer: [],
       'steam-snapshot': [
         this.createMarketState(items[0]!, timestamps['steam-snapshot'], {
           source: 'steam-snapshot',

@@ -69,6 +69,16 @@ export class MarketSnapshotService {
     );
   }
 
+  async getVariantSnapshotHistoryRecordMap(
+    itemVariantIds: readonly string[],
+    limit: number,
+  ): Promise<ReadonlyMap<string, readonly MarketSnapshotRecord[]>> {
+    return this.marketStateRepository.findVariantSnapshotHistories(
+      itemVariantIds,
+      limit,
+    );
+  }
+
   selectHistoricalFallback(
     sourceState: MarketStateSourceRecord,
     snapshotHistory: readonly MarketSnapshotRecord[],
@@ -175,7 +185,9 @@ export class MarketSnapshotService {
         baseConfidence ??
         (ask !== undefined ||
         bid !== undefined ||
-        (snapshot.listingCount !== null && snapshot.listingCount !== undefined)
+        (snapshot.listingCount !== null &&
+          snapshot.listingCount !== undefined &&
+          snapshot.listingCount > 0)
           ? 0.5
           : 0),
     };
@@ -185,7 +197,7 @@ export class MarketSnapshotService {
     return (
       observation.ask !== undefined ||
       observation.bid !== undefined ||
-      observation.listedQty !== undefined
+      (observation.listedQty !== undefined && observation.listedQty > 0)
     );
   }
 

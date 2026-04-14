@@ -19,6 +19,8 @@ export const OPPORTUNITY_REASON_CODES = [
   'buy_sell_same_source',
   'non_positive_raw_spread',
   'negative_fees_adjusted_spread',
+  'near_equal_after_fees',
+  'true_non_positive_edge',
   'expected_net_below_category_floor',
   'spread_percent_below_category_floor',
   'confidence_below_candidate_floor',
@@ -30,9 +32,17 @@ export const OPPORTUNITY_REASON_CODES = [
   'source_disagreement_penalty_elevated',
   'sell_source_requires_listed_exit',
   'steam_snapshot_fallback_used',
+  'steam_snapshot_pair_demoted',
   'stale_snapshot_used',
   'backup_reference_confirms_band',
   'backup_reference_outlier',
+  'strict_variant_key_missing',
+  'strict_variant_key_mismatch',
+  'pre_score_outlier_rejected',
+  'source_median_outlier_rejected',
+  'cross_source_consensus_outlier_rejected',
+  'insufficient_comparable_sources',
+  'stale_pre_score_rejection',
   'MISMATCH_EXTERIOR',
   'MISMATCH_STATTRAK',
   'MISMATCH_SOUVENIR',
@@ -75,3 +85,59 @@ export const OPPORTUNITY_ENGINE_RISK_CLASSES = [
 
 export type OpportunityEngineRiskClass =
   (typeof OPPORTUNITY_ENGINE_RISK_CLASSES)[number];
+
+export const OPPORTUNITY_SURFACE_TIERS = [
+  'tradable',
+  'reference_backed',
+  'near_eligible',
+  'research',
+  'rejected',
+] as const;
+
+export type OpportunitySurfaceTier = (typeof OPPORTUNITY_SURFACE_TIERS)[number];
+
+export const OPPORTUNITY_BLOCKER_REASONS = [
+  'steam_snapshot_pair',
+  'listed_exit_only',
+  'fallback_data',
+  'low_expected_net',
+  'low_spread_percent',
+  'low_confidence',
+  'low_liquidity',
+  'strict_variant_key_missing',
+  'strict_variant_key_mismatch',
+  'pre_score_outlier',
+  'insufficient_comparables',
+  'stale_sources',
+] as const;
+
+export type OpportunityBlockerReason =
+  (typeof OPPORTUNITY_BLOCKER_REASONS)[number];
+
+export const OPPORTUNITY_RISK_REASON_SEVERITIES = [
+  'info',
+  'warning',
+  'critical',
+] as const;
+
+export type OpportunityRiskReasonSeverity =
+  (typeof OPPORTUNITY_RISK_REASON_SEVERITIES)[number];
+
+export const OPPORTUNITY_RISK_REASON_CODES = [
+  'steam_snapshot_pair',
+  'reference_backed_only',
+  'listed_exit_only',
+  'fallback_data',
+  'stale_sources',
+  'low_liquidity',
+  'cross_source_disagreement',
+  'strict_variant_key_missing',
+  'strict_variant_key_mismatch',
+  'pattern_or_float_uncertainty',
+  'price_outlier',
+  'insufficient_comparables',
+  'low_confidence',
+] as const;
+
+export type OpportunityRiskReasonCode =
+  (typeof OPPORTUNITY_RISK_REASON_CODES)[number];

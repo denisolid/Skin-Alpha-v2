@@ -183,6 +183,47 @@ enum JobRunStatus {
   CANCELED
 }
 
+enum IngestionJobStatus {
+  PLANNED
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELED
+  DEAD_LETTER
+}
+
+enum IngestionPriorityClass {
+  HOT
+  WARM
+  COLD
+  BACKFILL
+  RECOVERY
+}
+
+enum IngestionFailureClass {
+  TIMEOUT
+  NETWORK
+  RATE_LIMITED
+  AUTH
+  SCHEMA_CHANGED
+  CURSOR_INVALID
+  EMPTY_VALID
+  DB_CONTENTION
+  POISON_PAYLOAD
+  UNKNOWN
+}
+
+enum PendingMappingKind {
+  LISTING
+  MARKET_FACT
+}
+
+enum ProvenanceEntityKind {
+  SOURCE_LISTING
+  SOURCE_MARKET_FACT
+}
+
 model User {
   id              String                 @id @default(uuid()) @db.Uuid
   email           String?                @unique @db.VarChar(320)
@@ -293,6 +334,13 @@ model Source {
   sourceSyncStatuses  SourceSyncStatus[]
   sourceHealthMetrics SourceHealthMetric[]
   jobRuns             JobRun[]
+  fetchJobs           SourceFetchJob[]
+  cursorStates        SourceCursorState[]
+  sourceMarketFacts   SourceMarketFact[]
+  pendingMappings     PendingSourceMapping[]
+  provenanceRecords   SourceEntityProvenance[]
+  itemFreshness       ItemSourceFreshness[]
+  deadLetters         IngestionDeadLetter[]
 
   @@index([kind, isEnabled])
 }
@@ -317,6 +365,8 @@ model CanonicalItem {
   sourceListings    SourceListing[]
   marketStates      MarketState[]
   marketSnapshots   MarketSnapshot[]
+  sourceMarketFacts SourceMarketFact[]
+  itemFreshness     ItemSourceFreshness[]
   opportunities     Opportunity[]
   userItemActions   UserItemAction[]
   watchlistItems    WatchlistItem[]
@@ -347,6 +397,8 @@ model ItemVariant {
   sourceListings  SourceListing[]
   marketStates    MarketState[]
   marketSnapshots MarketSnapshot[]
+  sourceMarketFacts SourceMarketFact[]
+  itemFreshness   ItemSourceFreshness[]
   opportunities   Opportunity[]
   userItemActions UserItemAction[]
   watchlistItems  WatchlistItem[]
@@ -396,27 +448,43 @@ model RawPayloadArchive {
   sourceId        String            @db.Uuid
   sourceListingId String?           @db.Uuid
   jobRunId        String?           @db.Uuid
+  fetchJobId      String?           @db.Uuid
   endpointName    String            @db.VarChar(120)
   externalId      String?           @db.VarChar(128)
   observedAt      DateTime
+  sourceObservedAt DateTime?
   entityType      ArchiveEntityType
   entityId        String            @db.VarChar(128)
   payload         Json
   payloadHash     String            @db.VarChar(64)
+  schemaFingerprint String?         @db.VarChar(128)
+  requestFingerprint String?        @db.VarChar(128)
+  requestMeta     Json?
+  responseMeta    Json?
+  cursor          Json?
+  windowStart     DateTime?
+  windowEnd       DateTime?
   contentType     String?           @db.VarChar(64)
   httpStatus      Int?
   fetchedAt       DateTime          @default(now())
+  archivedAt      DateTime          @default(now())
   createdAt       DateTime          @default(now())
   source          Source            @relation(fields: [sourceId], references: [id], onDelete: Cascade)
   sourceListing   SourceListing?    @relation(fields: [sourceListingId], references: [id], onDelete: SetNull)
   jobRun          JobRun?           @relation(fields: [jobRunId], references: [id], onDelete: SetNull)
+  fetchJob        SourceFetchJob?   @relation(fields: [fetchJobId], references: [id], onDelete: SetNull)
   marketSnapshots MarketSnapshot[]
+  sourceMarketFacts SourceMarketFact[]
+  pendingMappings PendingSourceMapping[]
+  provenanceRecords SourceEntityProvenance[]
+  deadLetters     IngestionDeadLetter[]
 
   @@index([sourceId, entityType, entityId, createdAt])
   @@index([sourceId, endpointName, observedAt])
   @@index([sourceId, externalId, observedAt])
   @@index([sourceListingId, createdAt])
   @@index([jobRunId, createdAt])
+  @@index([fetchJobId, createdAt])
 }
 
 // Append-only market history snapshots; latest state is projected into MarketState.
@@ -604,6 +672,8 @@ model Opportunity {
   @@index([buySourceId, sellSourceId, status])
   @@index([canonicalItemId, itemVariantId])
   @@index([detectedAt])
+  @@index([status, expiresAt, detectedAt])
+  @@index([itemVariantId, buySourceId, sellSourceId, status, detectedAt])
 }
 
 model Watchlist {
@@ -740,9 +810,218 @@ model SourceHealthMetric {
   @@index([status, recordedAt])
 }
 
+model SourceFetchJob {
+  id                 String                 @id @default(uuid()) @db.Uuid
+  sourceId           String                 @db.Uuid
+  syncType           SyncType
+  queueName          String                 @db.VarChar(64)
+  jobName            String                 @db.VarChar(120)
+  externalJobId      String?                @db.VarChar(128)
+  idempotencyKey     String                 @db.VarChar(191)
+  status             IngestionJobStatus     @default(QUEUED)
+  priorityClass      IngestionPriorityClass @default(WARM)
+  trigger            String?                @db.VarChar(32)
+  mode               String?                @db.VarChar(32)
+  segmentKey         String?                @db.VarChar(191)
+  cursorIn           Json?
+  cursorOut          Json?
+  windowStart        DateTime?
+  windowEnd          DateTime?
+  dueAt              DateTime               @default(now())
+  queuedAt           DateTime               @default(now())
+  startedAt          DateTime?
+  finishedAt         DateTime?
+  lastHeartbeatAt    DateTime?
+  leaseUntil         DateTime?
+  attempt            Int                    @default(0)
+  maxAttempts        Int                    @default(1)
+  requestFingerprint String?                @db.VarChar(128)
+  responseStatus     Int?
+  durationMs         Int?
+  rawPayloadCount    Int                    @default(0)
+  normalizedCount    Int                    @default(0)
+  warningCount       Int                    @default(0)
+  failureClass       IngestionFailureClass?
+  failureMessage     String?                @db.Text
+  metadata           Json?
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  source             Source                 @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  jobRuns            JobRun[]
+  rawPayloadArchives RawPayloadArchive[]
+  sourceMarketFacts  SourceMarketFact[]
+  pendingMappings    PendingSourceMapping[]
+  provenanceRecords  SourceEntityProvenance[]
+  deadLetters        IngestionDeadLetter[]
+
+  @@unique([sourceId, idempotencyKey])
+  @@index([sourceId, status, dueAt])
+  @@index([sourceId, syncType, updatedAt])
+  @@index([externalJobId])
+}
+
+model SourceCursorState {
+  id            String                @id @default(uuid()) @db.Uuid
+  sourceId      String                @db.Uuid
+  syncType      SyncType
+  segmentKey    String                @db.VarChar(191)
+  status        SyncStatus            @default(IDLE)
+  cursor        Json?
+  windowStart   DateTime?
+  windowEnd     DateTime?
+  lastFetchedAt DateTime?
+  lastSuccessAt DateTime?
+  lastFailureAt DateTime?
+  failureClass  IngestionFailureClass?
+  metadata      Json?
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+  source        Source                @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceId, syncType, segmentKey])
+  @@index([sourceId, updatedAt])
+  @@index([status, updatedAt])
+}
+
+model SourceMarketFact {
+  id                 String              @id @default(uuid()) @db.Uuid
+  sourceId           String              @db.Uuid
+  rawPayloadArchiveId String             @db.Uuid
+  fetchJobId         String?             @db.Uuid
+  canonicalItemId    String              @db.Uuid
+  itemVariantId      String              @db.Uuid
+  endpointName       String              @db.VarChar(120)
+  currencyCode       String              @db.VarChar(3)
+  lowestAskGross     Decimal?            @db.Decimal(18, 4)
+  highestBidGross    Decimal?            @db.Decimal(18, 4)
+  medianAskGross     Decimal?            @db.Decimal(18, 4)
+  lastTradeGross     Decimal?            @db.Decimal(18, 4)
+  average24hGross    Decimal?            @db.Decimal(18, 4)
+  listingCount       Int?
+  saleCount24h       Int?
+  sampleSize         Int?
+  confidence         Decimal?            @db.Decimal(5, 4)
+  liquidityScore     Decimal?            @db.Decimal(5, 4)
+  observedAt         DateTime
+  normalizedAt       DateTime            @default(now())
+  metadata           Json?
+  source             Source              @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  rawPayloadArchive  RawPayloadArchive   @relation(fields: [rawPayloadArchiveId], references: [id], onDelete: Cascade)
+  fetchJob           SourceFetchJob?     @relation(fields: [fetchJobId], references: [id], onDelete: SetNull)
+  canonicalItem      CanonicalItem       @relation(fields: [canonicalItemId], references: [id], onDelete: Restrict)
+  itemVariant        ItemVariant         @relation(fields: [itemVariantId], references: [id], onDelete: Restrict)
+
+  @@unique([sourceId, rawPayloadArchiveId, itemVariantId])
+  @@index([sourceId, itemVariantId, observedAt])
+  @@index([canonicalItemId, itemVariantId, observedAt])
+  @@index([fetchJobId, observedAt])
+}
+
+model PendingSourceMapping {
+  id                 String             @id @default(uuid()) @db.Uuid
+  sourceId           String             @db.Uuid
+  rawPayloadArchiveId String            @db.Uuid
+  fetchJobId         String?            @db.Uuid
+  endpointName       String             @db.VarChar(120)
+  kind               PendingMappingKind
+  sourceItemId       String             @db.VarChar(128)
+  title              String?            @db.VarChar(255)
+  normalizedTitle    String?            @db.VarChar(255)
+  observedAt         DateTime
+  normalizedAt       DateTime           @default(now())
+  variantHints       Json?
+  metadata           Json?
+  resolvedAt         DateTime?
+  resolutionNote     String?            @db.Text
+  source             Source             @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  rawPayloadArchive  RawPayloadArchive  @relation(fields: [rawPayloadArchiveId], references: [id], onDelete: Cascade)
+  fetchJob           SourceFetchJob?    @relation(fields: [fetchJobId], references: [id], onDelete: SetNull)
+
+  @@index([sourceId, sourceItemId, observedAt])
+  @@index([sourceId, kind, resolvedAt, observedAt])
+  @@index([fetchJobId, observedAt])
+}
+
+model SourceEntityProvenance {
+  id                 String               @id @default(uuid()) @db.Uuid
+  sourceId           String               @db.Uuid
+  rawPayloadArchiveId String              @db.Uuid
+  fetchJobId         String?              @db.Uuid
+  jobRunId           String?              @db.Uuid
+  entityKind         ProvenanceEntityKind
+  entityRecordId     String               @db.Uuid
+  observedAt         DateTime
+  normalizedAt       DateTime             @default(now())
+  metadata           Json?
+  source             Source               @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  rawPayloadArchive  RawPayloadArchive    @relation(fields: [rawPayloadArchiveId], references: [id], onDelete: Cascade)
+  fetchJob           SourceFetchJob?      @relation(fields: [fetchJobId], references: [id], onDelete: SetNull)
+  jobRun             JobRun?              @relation(fields: [jobRunId], references: [id], onDelete: SetNull)
+
+  @@unique([entityKind, entityRecordId, rawPayloadArchiveId])
+  @@index([sourceId, entityKind, observedAt])
+  @@index([fetchJobId, entityKind, observedAt])
+}
+
+model ItemSourceFreshness {
+  id                   String    @id @default(uuid()) @db.Uuid
+  sourceId             String    @db.Uuid
+  canonicalItemId      String    @db.Uuid
+  itemVariantId        String    @db.Uuid
+  lastRawObservedAt    DateTime?
+  lastRawFetchedAt     DateTime?
+  lastRawArchivedAt    DateTime?
+  lastNormalizedAt     DateTime?
+  lastListingObservedAt DateTime?
+  lastMarketFactObservedAt DateTime?
+  lastSnapshotObservedAt DateTime?
+  lastMarketStateUpdatedAt DateTime?
+  freshnessLagSeconds  Int?
+  isListingStale       Boolean   @default(false)
+  isMarketStateStale   Boolean   @default(false)
+  heartbeatMissing     Boolean   @default(false)
+  metadata             Json?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  source               Source    @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  canonicalItem        CanonicalItem @relation(fields: [canonicalItemId], references: [id], onDelete: Cascade)
+  itemVariant          ItemVariant @relation(fields: [itemVariantId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceId, itemVariantId])
+  @@index([canonicalItemId, updatedAt])
+  @@index([sourceId, heartbeatMissing, updatedAt])
+}
+
+model IngestionDeadLetter {
+  id                 String                @id @default(uuid()) @db.Uuid
+  sourceId           String?               @db.Uuid
+  fetchJobId         String?               @db.Uuid
+  rawPayloadArchiveId String?              @db.Uuid
+  jobRunId           String?               @db.Uuid
+  stage              String                @db.VarChar(64)
+  failureClass       IngestionFailureClass @default(UNKNOWN)
+  reason             String                @db.Text
+  payload            Json?
+  metadata           Json?
+  firstSeenAt        DateTime              @default(now())
+  lastSeenAt         DateTime              @default(now())
+  resolvedAt         DateTime?
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+  source             Source?               @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  fetchJob           SourceFetchJob?       @relation(fields: [fetchJobId], references: [id], onDelete: SetNull)
+  rawPayloadArchive  RawPayloadArchive?    @relation(fields: [rawPayloadArchiveId], references: [id], onDelete: SetNull)
+  jobRun             JobRun?               @relation(fields: [jobRunId], references: [id], onDelete: SetNull)
+
+  @@index([sourceId, stage, createdAt])
+  @@index([failureClass, createdAt])
+  @@index([fetchJobId, createdAt])
+}
+
 model JobRun {
   id                 String              @id @default(uuid()) @db.Uuid
   sourceId           String?             @db.Uuid
+  fetchJobId         String?             @db.Uuid
   queueName          String              @db.VarChar(64)
   jobType            JobType
   jobName            String              @db.VarChar(120)
@@ -760,11 +1039,15 @@ model JobRun {
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
   source             Source?             @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  fetchJob           SourceFetchJob?     @relation(fields: [fetchJobId], references: [id], onDelete: SetNull)
   rawPayloadArchives RawPayloadArchive[]
   syncStatuses       SourceSyncStatus[]  @relation("SourceSyncStatusLastJobRun")
+  provenanceRecords  SourceEntityProvenance[]
+  deadLetters        IngestionDeadLetter[]
 
   @@index([status, queuedAt])
   @@index([sourceId, status])
+  @@index([fetchJobId, status])
   @@index([queueName, jobType, status])
   @@index([externalJobId])
 }

@@ -5,6 +5,8 @@ import type { CatalogItemMappingDto } from '../dto/catalog-item-mapping.dto';
 import type { CatalogSourceListingInputDto } from '../dto/catalog-source-listing-input.dto';
 import { slugify } from '../infrastructure/utils/slugify.util';
 import { CatalogAliasNormalizationService } from './catalog-alias-normalization.service';
+import { CatalogPhaseNormalizationService } from './catalog-phase-normalization.service';
+import { VariantSignalPolicyService } from './variant-signal-policy.service';
 
 interface ParsedNameStructure {
   readonly category: ItemCategory;
@@ -17,11 +19,14 @@ interface ParsedNameStructure {
 }
 
 interface ParsedPhaseInfo {
+  readonly phaseFamily: CatalogItemMappingDto['phaseFamily'];
   readonly phase?: VariantPhase;
   readonly phaseLabel?: string;
   readonly isDoppler: boolean;
   readonly isGammaDoppler: boolean;
   readonly isGammaPhase: boolean;
+  readonly confidence: number;
+  readonly warnings: readonly string[];
 }
 
 @Injectable()
@@ -29,6 +34,10 @@ export class CatalogMappingService {
   constructor(
     @Inject(CatalogAliasNormalizationService)
     private readonly aliasNormalizationService: CatalogAliasNormalizationService,
+    @Inject(CatalogPhaseNormalizationService)
+    private readonly phaseNormalizationService: CatalogPhaseNormalizationService,
+    @Inject(VariantSignalPolicyService)
+    private readonly variantSignalPolicyService: VariantSignalPolicyService,
   ) {}
 
   mapSourceListing(input: CatalogSourceListingInputDto): CatalogItemMappingDto {
@@ -53,17 +62,29 @@ export class CatalogMappingService {
       decoratorInfo.strippedName,
       explicitExterior,
     );
+    const phaseBaseName = this.stripTrailingPhaseSuffix(baseNameInfo.baseName);
     const structure = this.parseStructure({
-      baseName: baseNameInfo.baseName,
+      baseName: phaseBaseName,
       explicitCategory,
       explicitWeapon: input.weapon,
       explicitSkinName: input.skinName,
       explicitExterior: baseNameInfo.exterior,
     });
-    const phaseInfo = this.parsePhase(
-      input.phaseHint,
-      structure.skinName ?? structure.baseName,
-    );
+    const phaseInfo = this.parsePhase({
+      category: structure.category,
+      isVanilla: structure.isVanilla,
+      phaseHint: input.phaseHint,
+      nameValue: structure.skinName ?? structure.baseName,
+    });
+    const signalPolicy = this.variantSignalPolicyService.resolve({
+      category: structure.category,
+      nameValue: structure.skinName ?? structure.baseName,
+      isVanilla: structure.isVanilla,
+      ...(structure.exterior ? { exterior: structure.exterior } : {}),
+      ...(input.paintIndex !== null && input.paintIndex !== undefined
+        ? { paintIndex: input.paintIndex }
+        : {}),
+    });
     const rarity = this.aliasNormalizationService.normalizeRarity(input.rarity);
     const canonicalDisplayName = this.buildCanonicalDisplayName(structure);
     const variantTokens = [
@@ -79,6 +100,8 @@ export class CatalogMappingService {
       : 'default';
     const warnings = [
       ...structure.warnings,
+      ...phaseInfo.warnings,
+      ...signalPolicy.warnings,
       ...(canonicalDisplayName.length === 0
         ? ['Catalog parser did not derive a stable canonical display name.']
         : []),
@@ -102,17 +125,18 @@ export class CatalogMappingService {
       ...(input.paintIndex !== null && input.paintIndex !== undefined
         ? { paintIndex: input.paintIndex }
         : {}),
+      phaseFamily: phaseInfo.phaseFamily,
       ...(phaseInfo.phase ? { phase: phaseInfo.phase } : {}),
       ...(phaseInfo.phaseLabel ? { phaseLabel: phaseInfo.phaseLabel } : {}),
+      phaseConfidence: phaseInfo.confidence,
       isGammaPhase: phaseInfo.isGammaPhase,
       isVanilla: structure.isVanilla,
       isDoppler: phaseInfo.isDoppler,
       isGammaDoppler: phaseInfo.isGammaDoppler,
-      patternRelevant: this.isPatternRelevant(
-        structure.skinName ?? structure.baseName,
-        input.paintIndex,
-      ),
-      floatRelevant: this.isFloatRelevant(structure.category),
+      patternRelevant: signalPolicy.patternRelevant,
+      floatRelevant: signalPolicy.floatRelevant,
+      patternSensitivity: signalPolicy.patternSensitivity,
+      floatSensitivity: signalPolicy.floatSensitivity,
       variantKey,
       variantDisplayName,
       confidence: this.computeConfidence({
@@ -232,14 +256,6 @@ export class CatalogMappingService {
   }
 
   private deriveCategory(baseName: string): ItemCategory {
-    if (/capsule/iu.test(baseName)) {
-      return ItemCategory.CAPSULE;
-    }
-
-    if (/case/iu.test(baseName)) {
-      return ItemCategory.CASE;
-    }
-
     const leadingSegment = baseName.split(' | ')[0]?.trim() ?? baseName;
     const normalizedWeapon =
       this.aliasNormalizationService.normalizeWeaponName(leadingSegment);
@@ -253,10 +269,18 @@ export class CatalogMappingService {
     }
 
     if (
-      leadingSegment.startsWith('★') ||
+      this.aliasNormalizationService.hasStarPrefix(leadingSegment) ||
       this.aliasNormalizationService.isKnownKnifeWeapon(normalizedWeapon)
     ) {
       return ItemCategory.KNIFE;
+    }
+
+    if (/capsule/iu.test(baseName)) {
+      return ItemCategory.CAPSULE;
+    }
+
+    if (/case/iu.test(baseName)) {
+      return ItemCategory.CASE;
     }
 
     return ItemCategory.SKIN;
@@ -280,10 +304,8 @@ export class CatalogMappingService {
       };
     }
 
-    const exteriorMatch = strippedName.match(/\(([^)]+)\)$/u);
-    const normalizedExterior = this.aliasNormalizationService.normalizeExterior(
-      exteriorMatch?.[1],
-    );
+    const normalizedExterior =
+      this.aliasNormalizationService.extractExteriorFromTitle(strippedName);
 
     return {
       baseName: normalizedExterior
@@ -295,97 +317,41 @@ export class CatalogMappingService {
     };
   }
 
-  private parsePhase(
-    phaseHint: string | null | undefined,
-    nameValue: string,
-  ): ParsedPhaseInfo {
-    const candidateValue = this.aliasNormalizationService
-      .normalizeWhitespace(
-        phaseHint && phaseHint.trim().length > 0 ? phaseHint : nameValue,
-      )
-      .toLowerCase();
-    const isGammaDoppler = /gamma doppler/iu.test(candidateValue);
-    const isDoppler = /doppler/iu.test(candidateValue);
-    const phaseLabel = this.extractPhaseLabel(candidateValue);
-
-    if (!phaseLabel) {
-      return {
-        isDoppler,
-        isGammaDoppler,
-        isGammaPhase: false,
-      };
-    }
-
-    const mappedPhase = this.mapPhaseLabel(phaseLabel);
+  private parsePhase(input: {
+    readonly category: ItemCategory;
+    readonly isVanilla: boolean;
+    readonly phaseHint: string | null | undefined;
+    readonly nameValue: string;
+  }): ParsedPhaseInfo {
+    const normalizedPhase = this.phaseNormalizationService.normalize(input);
 
     return {
-      ...(mappedPhase ? { phase: mappedPhase } : {}),
-      phaseLabel,
-      isDoppler: isDoppler || phaseLabel !== undefined,
-      isGammaDoppler,
-      isGammaPhase: isGammaDoppler,
+      phaseFamily: normalizedPhase.family,
+      ...(normalizedPhase.phase ? { phase: normalizedPhase.phase } : {}),
+      ...(normalizedPhase.phaseLabel
+        ? { phaseLabel: normalizedPhase.phaseLabel }
+        : {}),
+      isDoppler: normalizedPhase.isDoppler,
+      isGammaDoppler: normalizedPhase.isGammaDoppler,
+      isGammaPhase: normalizedPhase.isGammaPhase,
+      confidence: normalizedPhase.confidence,
+      warnings: normalizedPhase.warnings,
     };
   }
 
-  private extractPhaseLabel(candidateValue: string): string | undefined {
-    if (/phase 1/iu.test(candidateValue)) {
-      return 'Phase 1';
+  private stripTrailingPhaseSuffix(baseName: string): string {
+    const suffixMatch = baseName.match(/\(([^)]+)\)$/u);
+
+    if (
+      !suffixMatch?.[1] ||
+      !this.aliasNormalizationService.normalizePhaseHint(suffixMatch[1])
+    ) {
+      return baseName;
     }
 
-    if (/phase 2/iu.test(candidateValue)) {
-      return 'Phase 2';
-    }
-
-    if (/phase 3/iu.test(candidateValue)) {
-      return 'Phase 3';
-    }
-
-    if (/phase 4/iu.test(candidateValue)) {
-      return 'Phase 4';
-    }
-
-    if (/ruby/iu.test(candidateValue)) {
-      return 'Ruby';
-    }
-
-    if (/sapphire/iu.test(candidateValue)) {
-      return 'Sapphire';
-    }
-
-    if (/black pearl/iu.test(candidateValue)) {
-      return 'Black Pearl';
-    }
-
-    if (/emerald/iu.test(candidateValue)) {
-      return 'Emerald';
-    }
-
-    return undefined;
-  }
-
-  private mapPhaseLabel(
-    phaseLabel: string | undefined,
-  ): VariantPhase | undefined {
-    switch (phaseLabel?.toLowerCase()) {
-      case 'phase 1':
-        return VariantPhase.PHASE_1;
-      case 'phase 2':
-        return VariantPhase.PHASE_2;
-      case 'phase 3':
-        return VariantPhase.PHASE_3;
-      case 'phase 4':
-        return VariantPhase.PHASE_4;
-      case 'ruby':
-        return VariantPhase.RUBY;
-      case 'sapphire':
-        return VariantPhase.SAPPHIRE;
-      case 'black pearl':
-        return VariantPhase.BLACK_PEARL;
-      case 'emerald':
-        return VariantPhase.EMERALD;
-      default:
-        return undefined;
-    }
+    return this.aliasNormalizationService.normalizeWhitespace(
+      baseName.replace(/\s+\([^)]+\)$/u, ''),
+    );
   }
 
   private buildCanonicalDisplayName(structure: ParsedNameStructure): string {
@@ -410,25 +376,6 @@ export class CatalogMappingService {
     }
 
     return structure.baseName;
-  }
-
-  private isPatternRelevant(
-    nameValue: string,
-    paintIndex?: number | null,
-  ): boolean {
-    if (paintIndex === 44 || paintIndex === 1004) {
-      return true;
-    }
-
-    return /case hardened|crimson web|fade/iu.test(nameValue);
-  }
-
-  private isFloatRelevant(category: ItemCategory): boolean {
-    return (
-      category === ItemCategory.SKIN ||
-      category === ItemCategory.KNIFE ||
-      category === ItemCategory.GLOVE
-    );
   }
 
   private mapCategoryToType(category: ItemCategory): string {

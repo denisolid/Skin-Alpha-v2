@@ -13,6 +13,9 @@ import { AppLoggerService } from '../../../infrastructure/logging/app-logger.ser
 import { PrismaService } from '../../../infrastructure/prisma/prisma.service';
 import type { SourceAdapterKey } from '../domain/source-adapter.types';
 import type { SourceHealthModel } from '../domain/source-health.model';
+import { SourceCursorService } from './source-cursor.service';
+import { SourceFailureClassifierService } from './source-failure-classifier.service';
+import { SourceFetchJobService } from './source-fetch-job.service';
 import { SourceRecordService } from './source-record.service';
 
 interface StartJobRunInput {
@@ -69,6 +72,12 @@ export class SourceOperationsService {
     private readonly prismaService: PrismaService,
     @Inject(SourceRecordService)
     private readonly sourceRecordService: SourceRecordService,
+    @Inject(SourceFetchJobService)
+    private readonly sourceFetchJobService: SourceFetchJobService,
+    @Inject(SourceCursorService)
+    private readonly sourceCursorService: SourceCursorService,
+    @Inject(SourceFailureClassifierService)
+    private readonly sourceFailureClassifierService: SourceFailureClassifierService,
   ) {}
 
   async startJobRun(input: StartJobRunInput): Promise<string> {
@@ -85,6 +94,14 @@ export class SourceOperationsService {
     };
     const jobRun = await this.prismaService.jobRun.create({
       data: createData,
+    });
+    await this.sourceFetchJobService.markRunning({
+      source: input.source,
+      queueName: input.queueName,
+      jobName: input.jobName,
+      jobRunId: jobRun.id,
+      ...(input.externalJobId ? { externalJobId: input.externalJobId } : {}),
+      ...(input.payload ? { payload: input.payload } : {}),
     });
     this.logger.log(
       `Started job run ${jobRun.id} for ${input.source}:${input.queueName}.`,
@@ -115,6 +132,14 @@ export class SourceOperationsService {
       });
 
       if (existingJobRun) {
+        await this.sourceFetchJobService.ensureQueuedFetchJob({
+          source: input.source,
+          queueName: input.queueName,
+          jobName: input.jobName,
+          jobRunId: existingJobRun.id,
+          ...(input.externalJobId ? { externalJobId: input.externalJobId } : {}),
+          ...(input.payload ? { payload: input.payload } : {}),
+        });
         this.logger.debug(
           `Reused queued job run ${existingJobRun.id} for ${input.source}:${input.queueName}.`,
           SourceOperationsService.name,
@@ -134,6 +159,14 @@ export class SourceOperationsService {
     };
     const jobRun = await this.prismaService.jobRun.create({
       data: createData,
+    });
+    await this.sourceFetchJobService.ensureQueuedFetchJob({
+      source: input.source,
+      queueName: input.queueName,
+      jobName: input.jobName,
+      jobRunId: jobRun.id,
+      ...(input.externalJobId ? { externalJobId: input.externalJobId } : {}),
+      ...(input.payload ? { payload: input.payload } : {}),
     });
     this.logger.log(
       `Queued job run ${jobRun.id} for ${input.source}:${input.queueName}${input.externalJobId ? ` (${input.externalJobId})` : ''}.`,
@@ -182,6 +215,14 @@ export class SourceOperationsService {
         SourceOperationsService.name,
       );
     }
+    await this.sourceFetchJobService.markRunning({
+      source: input.source,
+      queueName: input.queueName,
+      jobName: input.jobName,
+      jobRunId: existingJobRun.id,
+      externalJobId: input.externalJobId,
+      ...(input.payload ? { payload: input.payload } : {}),
+    });
 
     return existingJobRun.id;
   }
@@ -197,6 +238,7 @@ export class SourceOperationsService {
         ...(input.result ? { result: input.result } : {}),
       },
     });
+    await this.sourceFetchJobService.markSucceeded(input);
     this.logger.log(
       `Completed job run ${input.jobRunId}.`,
       SourceOperationsService.name,
@@ -214,6 +256,7 @@ export class SourceOperationsService {
         ...(input.result ? { result: input.result } : {}),
       },
     });
+    await this.sourceFetchJobService.markCanceled(input);
     this.logger.warn(
       `Canceled job run ${input.jobRunId}.`,
       SourceOperationsService.name,
@@ -232,6 +275,7 @@ export class SourceOperationsService {
         ...(input.result ? { result: input.result } : {}),
       },
     });
+    await this.sourceFetchJobService.markFailed(input);
     this.logger.error(
       `Failed job run ${input.jobRunId}: ${input.errorMessage}`,
       undefined,
@@ -286,6 +330,22 @@ export class SourceOperationsService {
       },
       create: createData,
       update: updateData,
+    });
+    await this.sourceCursorService.upsertCursorState({
+      source: input.source,
+      syncType: input.syncType,
+      status: input.status,
+      ...(input.cursor ? { cursor: input.cursor } : {}),
+      ...(input.markSuccessful ? { lastSuccessAt: now } : {}),
+      ...(input.markFailed ? { lastFailureAt: now } : {}),
+      ...(input.markFailed
+        ? {
+            failureClass: this.sourceFailureClassifierService.classifyMessage(
+              this.readFailureMessage(input.details),
+            ),
+          }
+        : {}),
+      ...(input.details ? { metadata: input.details } : {}),
     });
   }
 
@@ -419,5 +479,17 @@ export class SourceOperationsService {
       case HealthStatus.FAILED:
         return 'down';
     }
+  }
+
+  private readFailureMessage(details: Prisma.InputJsonValue | undefined): string {
+    if (!details || typeof details !== 'object' || Array.isArray(details)) {
+      return 'unknown';
+    }
+
+    const reason = (details as Prisma.InputJsonObject).reason;
+
+    return typeof reason === 'string' && reason.trim().length > 0
+      ? reason
+      : 'unknown';
   }
 }

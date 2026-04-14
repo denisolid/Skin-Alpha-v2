@@ -480,6 +480,120 @@ export class AppConfigService {
     );
   }
 
+  get enableDMarket(): boolean {
+    return this.configService.getOrThrow('ENABLE_DMARKET', {
+      infer: true,
+    });
+  }
+
+  get dmarketApiBaseUrl(): string {
+    return this.configService.getOrThrow('DMARKET_API_BASE_URL', {
+      infer: true,
+    });
+  }
+
+  get dmarketPublicKey(): string | undefined {
+    return this.configService.get('DMARKET_PUBLIC_KEY', {
+      infer: true,
+    });
+  }
+
+  get dmarketSecretKey(): string | undefined {
+    return this.configService.get('DMARKET_SECRET_KEY', {
+      infer: true,
+    });
+  }
+
+  get dmarketCurrency(): string {
+    return this.configService.getOrThrow('DMARKET_CURRENCY', {
+      infer: true,
+    });
+  }
+
+  get dmarketPageLimit(): number {
+    return this.configService.getOrThrow('DMARKET_PAGE_LIMIT', {
+      infer: true,
+    });
+  }
+
+  get dmarketBatchSize(): number {
+    return this.configService.getOrThrow('DMARKET_BATCH_SIZE', {
+      infer: true,
+    });
+  }
+
+  get dmarketBatchBudget(): number {
+    return this.configService.getOrThrow('DMARKET_BATCH_BUDGET', {
+      infer: true,
+    });
+  }
+
+  get dmarketRateLimitWindowSeconds(): number {
+    return this.configService.getOrThrow('DMARKET_RATE_LIMIT_WINDOW_SECONDS', {
+      infer: true,
+    });
+  }
+
+  get dmarketRateLimitMaxRequests(): number {
+    return this.configService.getOrThrow('DMARKET_RATE_LIMIT_MAX_REQUESTS', {
+      infer: true,
+    });
+  }
+
+  get enableWaxpeer(): boolean {
+    return this.configService.getOrThrow('ENABLE_WAXPEER', {
+      infer: true,
+    });
+  }
+
+  get waxpeerApiBaseUrl(): string {
+    return this.configService.getOrThrow('WAXPEER_API_BASE_URL', {
+      infer: true,
+    });
+  }
+
+  get waxpeerApiKey(): string | undefined {
+    return this.configService.get('WAXPEER_API_KEY', {
+      infer: true,
+    });
+  }
+
+  get waxpeerGame(): string {
+    return this.configService.getOrThrow('WAXPEER_GAME', {
+      infer: true,
+    });
+  }
+
+  get waxpeerCurrency(): string {
+    return this.configService.getOrThrow('WAXPEER_CURRENCY', {
+      infer: true,
+    });
+  }
+
+  get waxpeerNameBatchSize(): number {
+    return this.configService.getOrThrow('WAXPEER_NAME_BATCH_SIZE', {
+      infer: true,
+    });
+  }
+
+  get waxpeerBatchBudget(): number {
+    return this.configService.getOrThrow('WAXPEER_BATCH_BUDGET', {
+      infer: true,
+    });
+  }
+
+  get waxpeerRateLimitWindowSeconds(): number {
+    return this.configService.getOrThrow('WAXPEER_RATE_LIMIT_WINDOW_SECONDS', {
+      infer: true,
+    });
+  }
+
+  get waxpeerRateLimitMaxRequests(): number {
+    return this.configService.getOrThrow('WAXPEER_RATE_LIMIT_MAX_REQUESTS', {
+      infer: true,
+    });
+  }
+
   get enableYouPin(): boolean {
     return this.configService.getOrThrow('ENABLE_YOUPIN', {
       infer: true,
@@ -913,6 +1027,32 @@ export class AppConfigService {
     return this.schedulerCsFloatMinIntervalMinutes * 60 * 1000;
   }
 
+  get schedulerDMarketMinIntervalMinutes(): number {
+    return this.configService.getOrThrow(
+      'SCHEDULER_DMARKET_MIN_INTERVAL_MINUTES',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get schedulerDMarketMinIntervalMs(): number {
+    return this.schedulerDMarketMinIntervalMinutes * 60 * 1000;
+  }
+
+  get schedulerWaxpeerMinIntervalMinutes(): number {
+    return this.configService.getOrThrow(
+      'SCHEDULER_WAXPEER_MIN_INTERVAL_MINUTES',
+      {
+        infer: true,
+      },
+    );
+  }
+
+  get schedulerWaxpeerMinIntervalMs(): number {
+    return this.schedulerWaxpeerMinIntervalMinutes * 60 * 1000;
+  }
+
   get schedulerSteamSnapshotMinIntervalMinutes(): number {
     return this.configService.getOrThrow(
       'SCHEDULER_STEAM_SNAPSHOT_MIN_INTERVAL_MINUTES',
@@ -1039,6 +1179,16 @@ export class AppConfigService {
 
   isCsFloatConfigured(): boolean {
     return Boolean(this.csfloatApiKey);
+  }
+
+  isDMarketEnabled(): boolean {
+    return Boolean(
+      this.enableDMarket && this.dmarketPublicKey && this.dmarketSecretKey,
+    );
+  }
+
+  isWaxpeerEnabled(): boolean {
+    return Boolean(this.enableWaxpeer && this.waxpeerApiKey);
   }
 
   isYouPinEnabled(): boolean {

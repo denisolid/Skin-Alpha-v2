@@ -1,4 +1,4 @@
-import { ForbiddenException, Inject, Injectable } from '@nestjs/common';
+import { ForbiddenException, Inject, Injectable, Logger } from '@nestjs/common';
 import {
   HealthStatus,
   JobRunStatus,
@@ -8,23 +8,30 @@ import {
 } from '@prisma/client';
 
 import { AppConfigService } from '../../../infrastructure/config/app-config.service';
+import { ReadPathDegradationService } from '../../../infrastructure/redis/read-path-degradation.service';
 import type { AuthUserRecord } from '../../auth/domain/auth.repository';
+import { SchedulerLockService } from '../../jobs/services/scheduler-lock.service';
 import { MarketFreshnessPolicyService } from '../../market-state/services/market-freshness-policy.service';
 import type { OpportunityReasonCode } from '../../opportunities/domain/opportunity-engine.model';
 import type { OpportunityEngineScanResultDto } from '../../opportunities/dto/opportunity-engine.dto';
 import { OpportunityEngineService } from '../../opportunities/services/opportunity-engine.service';
 import { ScannerUniverseService } from '../../opportunities/services/scanner-universe.service';
+import type { SourceAdapterKey } from '../../source-adapters/domain/source-adapter.types';
+import { SourceOperationalProfileService } from '../../source-adapters/services/source-operational-profile.service';
+import { SourceRuntimeGuardService } from '../../source-adapters/services/source-runtime-guard.service';
 import type { DiagnosticsUseCase } from '../application/diagnostics.use-case';
 import {
   DIAGNOSTICS_REPOSITORY,
   type DiagnosticsHealthMetricWithSourceRecord,
   type DiagnosticsJobRunRecord,
+  type DiagnosticsPendingSourceMappingRecord,
   type DiagnosticsRepository,
   type DiagnosticsSourcePairOverlapRecord,
   type DiagnosticsSourceOverviewRecord,
   type DiagnosticsSourceSyncStatusRecord,
 } from '../domain/diagnostics.repository';
 import type {
+  CsFloatCoverageDiagnosticsDto,
   DiagnosticsFreshnessCountsDto,
   DiagnosticsJobRunHistoryItemDto,
   JobRunHistoryDto,
@@ -57,6 +64,12 @@ const DEFAULT_REJECT_TOP = 10;
 const DEFAULT_REJECT_SCAN_LIMIT = 40;
 const DEFAULT_REJECT_MAX_PAIRS = 24;
 const MAX_UNRESOLVED_SIGNAL_SCAN = 300;
+const USEFUL_PAYLOAD_RATIO_WINDOW_SIZE = 25;
+const CSFLOAT_HOT_COVERAGE_WINDOW_SIZE = 400;
+const CSFLOAT_DETAIL_FETCH_RATIO_WINDOW_SIZE = 100;
+const SOURCE_OPERATIONAL_SUMMARY_CACHE_TTL_MS = 60 * 1000;
+const SLOW_SOURCE_OPERATIONAL_SUMMARY_THRESHOLD_MS = 5_000;
+const READ_PATH_DEGRADED_TTL_MS = 15 * 60 * 1000;
 
 interface ComputedFreshnessDistribution {
   readonly overall: DiagnosticsFreshnessCountsDto;
@@ -85,17 +98,38 @@ interface UnresolvedSignal {
 
 @Injectable()
 export class DiagnosticsService implements DiagnosticsUseCase {
+  private readonly logger = new Logger(DiagnosticsService.name);
+  private readonly sourceOperationalSummaryCache = new Map<
+    string,
+    {
+      readonly expiresAtMs: number;
+      readonly value: SourceOperationalSummaryDto;
+    }
+  >();
+  private readonly sourceOperationalSummaryInflight = new Map<
+    string,
+    Promise<SourceOperationalSummaryDto>
+  >();
+
   constructor(
     @Inject(DIAGNOSTICS_REPOSITORY)
     private readonly diagnosticsRepository: DiagnosticsRepository,
     @Inject(AppConfigService)
     private readonly configService: AppConfigService,
+    @Inject(SchedulerLockService)
+    private readonly schedulerLockService: SchedulerLockService,
+    @Inject(ReadPathDegradationService)
+    private readonly readPathDegradationService: ReadPathDegradationService,
     @Inject(MarketFreshnessPolicyService)
     private readonly marketFreshnessPolicyService: MarketFreshnessPolicyService,
     @Inject(OpportunityEngineService)
     private readonly opportunityEngineService: OpportunityEngineService,
     @Inject(ScannerUniverseService)
     private readonly scannerUniverseService: ScannerUniverseService,
+    @Inject(SourceOperationalProfileService)
+    private readonly sourceOperationalProfileService: SourceOperationalProfileService,
+    @Inject(SourceRuntimeGuardService)
+    private readonly sourceRuntimeGuardService: SourceRuntimeGuardService,
   ) {}
 
   async getSourceHealthDashboard(
@@ -110,12 +144,24 @@ export class DiagnosticsService implements DiagnosticsUseCase {
       sourceOverviewRecords,
       generatedAt,
     );
+    const runtimeStates = new Map<
+      SourceAdapterKey,
+      Awaited<ReturnType<SourceRuntimeGuardService['inspect']>>
+    >(
+      await Promise.all(
+        sourceOverviewRecords.map(async (sourceRecord) => [
+          sourceRecord.code,
+          await this.sourceRuntimeGuardService.inspect(sourceRecord.code),
+        ] as const),
+      ),
+    );
     const sources = sourceOverviewRecords
       .map((sourceRecord) =>
         this.toSourceHealthDashboardItem(
           sourceRecord,
           freshnessDistribution.freshnessBySourceId.get(sourceRecord.id) ??
             this.createEmptyFreshnessCounts(),
+          runtimeStates.get(sourceRecord.code),
         ),
       )
       .sort((left, right) => this.compareSourceHealthItems(left, right));
@@ -149,12 +195,17 @@ export class DiagnosticsService implements DiagnosticsUseCase {
     this.assertAdminUser(user, 'queue lag diagnostics');
 
     const generatedAt = new Date();
-    const [currentQueueLagRecords, recentQueueOutcomeRecords] =
+    const [currentQueueLagRecords, recentQueueOutcomeRecords, maintenanceLocks] =
       await Promise.all([
         this.diagnosticsRepository.listCurrentQueueLagRecords(),
         this.diagnosticsRepository.listQueueOutcomeRecords(
           new Date(generatedAt.getTime() - 24 * 60 * 60 * 1000),
         ),
+        Promise.all([
+          this.schedulerLockService.inspect('tick'),
+          this.schedulerLockService.inspect('market-state-rebuild'),
+          this.schedulerLockService.inspect('opportunity-rescan'),
+        ]),
       ]);
     const queueNames = new Set<string>();
 
@@ -251,6 +302,7 @@ export class DiagnosticsService implements DiagnosticsUseCase {
         ),
       },
       queues,
+      maintenanceLocks,
     };
   }
 
@@ -303,60 +355,158 @@ export class DiagnosticsService implements DiagnosticsUseCase {
     user: Pick<AuthUserRecord, 'role'>,
   ): Promise<SourceOperationalSummaryDto> {
     this.assertAdminUser(user, 'source operational summary');
+    const cacheKey = query.source ?? 'all';
+    const cached = this.sourceOperationalSummaryCache.get(cacheKey);
 
+    if (cached && cached.expiresAtMs > Date.now()) {
+      return cached.value;
+    }
+
+    const inflight = this.sourceOperationalSummaryInflight.get(cacheKey);
+
+    if (inflight) {
+      return inflight;
+    }
+
+    const request = this.buildSourceOperationalSummary(query, cacheKey);
+
+    this.sourceOperationalSummaryInflight.set(cacheKey, request);
+
+    try {
+      return await request;
+    } finally {
+      this.sourceOperationalSummaryInflight.delete(cacheKey);
+    }
+  }
+
+  private async buildSourceOperationalSummary(
+    query: GetDiagnosticsRecordsQueryDto,
+    cacheKey: string,
+  ): Promise<SourceOperationalSummaryDto> {
+    const startedAt = Date.now();
     const generatedAt = new Date();
     const [
       sourceOverviewRecords,
+      rawPayloadArchiveCounts,
       sourceListingCounts,
+      sourceMarketFactCounts,
       marketSnapshotCounts,
       marketStateCounts,
       overlapCoverage,
-      unresolvedMappings,
+      pendingMappingCounts,
+      recentRawPayloadArchiveCounts,
+      recentUsefulRawPayloadCounts,
+      projectionSkipCounts,
+      latestNormalizedBySource,
+      latestRawPayloadByEndpoint,
+      sourcePairOverlap,
+      csfloatCoverage,
     ] = await Promise.all([
       this.diagnosticsRepository.listSourceOverviewRecords(),
+      this.diagnosticsRepository.listRawPayloadArchiveCounts(),
       this.diagnosticsRepository.listSourceListingCounts(),
+      this.diagnosticsRepository.listSourceMarketFactCounts(),
       this.diagnosticsRepository.listMarketSnapshotCounts(),
       this.diagnosticsRepository.listMarketStateCounts(),
       this.diagnosticsRepository.getOverlapCoverage(),
-      this.getUnresolvedMappings(
-        {
-          ...(query.source ? { source: query.source } : {}),
-          lookbackHours: query.lookbackHours ?? DEFAULT_LOOKBACK_HOURS,
-          limit: MAX_UNRESOLVED_SIGNAL_SCAN,
-        },
-        user,
+      this.diagnosticsRepository.listPendingSourceMappingCounts({
+        ...(query.source ? { source: query.source } : {}),
+        unresolvedOnly: true,
+      }),
+      this.diagnosticsRepository.listRecentRawPayloadArchiveCounts(
+        USEFUL_PAYLOAD_RATIO_WINDOW_SIZE,
       ),
+      this.diagnosticsRepository.listRecentUsefulRawPayloadCounts(
+        USEFUL_PAYLOAD_RATIO_WINDOW_SIZE,
+      ),
+      this.diagnosticsRepository.listProjectionSkipCounts(),
+      this.diagnosticsRepository.listLatestNormalizedAtBySource(),
+      this.diagnosticsRepository.listLatestRawPayloadObservedAtByEndpoint(),
+      this.diagnosticsRepository.listPairableVariantCountsBySourcePair(),
+      !query.source || query.source === 'csfloat'
+        ? this.buildCsFloatCoverageDiagnostics()
+        : Promise.resolve(undefined),
     ]);
+    const rawArchiveCountsBySource = this.toSourceCountMap(rawPayloadArchiveCounts);
     const listingCountsBySource = this.toSourceCountMap(sourceListingCounts);
+    const marketFactCountsBySource = this.toSourceCountMap(sourceMarketFactCounts);
     const snapshotCountsBySource = this.toSourceCountMap(marketSnapshotCounts);
     const marketStateCountsBySource = this.toSourceCountMap(marketStateCounts);
-    const unresolvedCountsBySource = new Map<
-      UnresolvedMappingItemDto['source'],
-      number
-    >();
+    const pendingMappingCountsBySource = this.toSourceCountMap(pendingMappingCounts);
+    const recentRawPayloadArchiveCountsBySource = this.toSourceCountMap(
+      recentRawPayloadArchiveCounts,
+    );
+    const recentUsefulRawPayloadCountsBySource = this.toSourceCountMap(
+      recentUsefulRawPayloadCounts,
+    );
+    const projectionSkipCountsBySource =
+      this.toSourceCountMap(projectionSkipCounts);
+    const latestNormalizedAtBySource =
+      this.toSourceTimestampMap(latestNormalizedBySource);
+    const latestRawPayloadByEndpointBySource =
+      this.toSourceEndpointTimestampMap(latestRawPayloadByEndpoint);
+    const overlapBySource = this.buildOverlapSummaryBySource(sourcePairOverlap);
+    const runtimeStates = new Map<
+      SourceAdapterKey,
+      Awaited<ReturnType<SourceRuntimeGuardService['inspect']>>
+    >(
+      await Promise.all(
+        sourceOverviewRecords.map(async (sourceRecord) => [
+          sourceRecord.code,
+          await this.sourceRuntimeGuardService.inspect(sourceRecord.code),
+        ] as const),
+      ),
+    );
 
-    for (const item of unresolvedMappings.items) {
-      unresolvedCountsBySource.set(
-        item.source,
-        (unresolvedCountsBySource.get(item.source) ?? 0) + item.occurrences,
-      );
-    }
-
-    return {
+    const result = {
       generatedAt,
       variantsWithTwoPlusSources: overlapCoverage.variantsWithTwoPlusSources,
       variantsWithThreePlusSources:
         overlapCoverage.variantsWithThreePlusSources,
+      ...(csfloatCoverage ? { csfloatCoverage } : {}),
       sources: sourceOverviewRecords
         .filter((sourceRecord) =>
           query.source ? sourceRecord.code === query.source : true,
         )
         .map((sourceRecord) => {
           const sourceMetadata = this.toJsonObject(sourceRecord.metadata);
+          const operationalMetadata = this.toJsonObject(sourceMetadata.operational);
           const classification =
             typeof sourceMetadata.classification === 'string'
               ? sourceMetadata.classification
               : undefined;
+          const runtimeState = runtimeStates.get(sourceRecord.code);
+          const overlapSummary = overlapBySource.get(sourceRecord.code) ?? {
+            canonicalOverlapVariantCount: 0,
+            pairableOverlapVariantCount: 0,
+            blockedOverlapVariantCount: 0,
+            averageOverlapQualityScore: undefined,
+          };
+          const rawPayloadArchivesCount =
+            rawArchiveCountsBySource.get(sourceRecord.code) ?? 0;
+          const sourceListingsCount =
+            listingCountsBySource.get(sourceRecord.code) ?? 0;
+          const sourceMarketFactsCount =
+            marketFactCountsBySource.get(sourceRecord.code) ?? 0;
+          const marketSnapshotsCount =
+            snapshotCountsBySource.get(sourceRecord.code) ?? 0;
+          const marketStatesCount =
+            marketStateCountsBySource.get(sourceRecord.code) ?? 0;
+          const pendingMappingsCount =
+            pendingMappingCountsBySource.get(sourceRecord.code) ?? 0;
+          const recentRawPayloadCount =
+            recentRawPayloadArchiveCountsBySource.get(sourceRecord.code) ?? 0;
+          const usefulPayloadCount =
+            recentUsefulRawPayloadCountsBySource.get(sourceRecord.code) ?? 0;
+          const unchangedProjectionSkipCount =
+            projectionSkipCountsBySource.get(sourceRecord.code) ?? 0;
+          const latestNormalizedAt =
+            latestNormalizedAtBySource.get(sourceRecord.code);
+          const latestStateCapableRawObservedAt =
+            this.resolveLatestStateCapableRawObservedAt(
+              sourceRecord.code,
+              latestRawPayloadByEndpointBySource.get(sourceRecord.code),
+            );
 
           return {
             source: sourceRecord.code,
@@ -364,18 +514,67 @@ export class DiagnosticsService implements DiagnosticsUseCase {
             sourceKind: sourceRecord.kind,
             isEnabled: sourceRecord.isEnabled,
             ...(classification ? { classification } : {}),
-            sourceListingsCount:
-              listingCountsBySource.get(sourceRecord.code) ?? 0,
-            marketSnapshotsCount:
-              snapshotCountsBySource.get(sourceRecord.code) ?? 0,
-            marketStatesCount:
-              marketStateCountsBySource.get(sourceRecord.code) ?? 0,
-            unresolvedMappingSignalCount:
-              unresolvedCountsBySource.get(sourceRecord.code) ?? 0,
+            ...(typeof operationalMetadata.integrationModel === 'string'
+              ? { integrationModel: operationalMetadata.integrationModel }
+              : {}),
+            ...(typeof operationalMetadata.stage === 'string'
+              ? { operationalStage: operationalMetadata.stage }
+              : {}),
+            ...(runtimeState ? { runtimeState: runtimeState.mode } : {}),
+            ...(runtimeState?.reason ? { runtimeReason: runtimeState.reason } : {}),
+            requiresProxy: operationalMetadata.proxyRequirement === 'required',
+            requiresSession:
+              operationalMetadata.sessionRequirement === 'required' ||
+              operationalMetadata.cookieRequirement === 'required',
+            requiresAccount: operationalMetadata.accountRequirement === 'required',
+            rawPayloadArchivesCount,
+            sourceListingsCount,
+            sourceMarketFactsCount,
+            marketSnapshotsCount,
+            marketStatesCount,
+            pendingMappingsCount,
+            unresolvedMappingSignalCount: pendingMappingsCount,
+            unchangedProjectionSkipCount,
+            ...(sourceRecord.latestRawPayloadObservedAt
+              ? {
+                  latestRawPayloadObservedAt:
+                    sourceRecord.latestRawPayloadObservedAt,
+                }
+              : {}),
             ...(sourceRecord.latestMarketStateObservedAt
               ? {
                   latestMarketStateObservedAt:
                     sourceRecord.latestMarketStateObservedAt,
+                }
+              : {}),
+            ...(latestNormalizedAt ? { latestNormalizedAt } : {}),
+            ...(latestStateCapableRawObservedAt &&
+            sourceRecord.latestMarketStateObservedAt
+              ? {
+                  rawToStateLagMs: Math.max(
+                    0,
+                    latestStateCapableRawObservedAt.getTime() -
+                      sourceRecord.latestMarketStateObservedAt.getTime(),
+                  ),
+                }
+              : {}),
+            projectionAmplificationRatio: this.toRatio(
+              marketSnapshotsCount,
+              marketStatesCount,
+            ),
+            usefulPayloadRatio: this.toPercent(
+              usefulPayloadCount / Math.max(1, recentRawPayloadCount),
+            ),
+            canonicalOverlapVariantCount:
+              overlapSummary.canonicalOverlapVariantCount,
+            pairableOverlapVariantCount:
+              overlapSummary.pairableOverlapVariantCount,
+            blockedOverlapVariantCount:
+              overlapSummary.blockedOverlapVariantCount,
+            ...(overlapSummary.averageOverlapQualityScore !== undefined
+              ? {
+                  averageOverlapQualityScore:
+                    overlapSummary.averageOverlapQualityScore,
                 }
               : {}),
           };
@@ -385,12 +584,97 @@ export class DiagnosticsService implements DiagnosticsUseCase {
             return right.marketStatesCount - left.marketStatesCount;
           }
 
+          if (right.rawPayloadArchivesCount !== left.rawPayloadArchivesCount) {
+            return right.rawPayloadArchivesCount - left.rawPayloadArchivesCount;
+          }
+
           if (right.sourceListingsCount !== left.sourceListingsCount) {
             return right.sourceListingsCount - left.sourceListingsCount;
           }
 
           return left.sourceName.localeCompare(right.sourceName);
         }),
+    };
+
+    const durationMs = Date.now() - startedAt;
+
+    this.sourceOperationalSummaryCache.set(cacheKey, {
+      expiresAtMs: Date.now() + SOURCE_OPERATIONAL_SUMMARY_CACHE_TTL_MS,
+      value: result,
+    });
+
+    if (process.env.NODE_ENV !== 'test') {
+      this.logger.log(
+        `getSourceOperationalSummary durationMs=${durationMs} source=${query.source ?? 'all'} sourceCount=${result.sources.length}`,
+      );
+    }
+
+    if (durationMs >= SLOW_SOURCE_OPERATIONAL_SUMMARY_THRESHOLD_MS) {
+      await this.readPathDegradationService.trip({
+        reason: 'source_operational_summary_slow',
+        ttlMs: READ_PATH_DEGRADED_TTL_MS,
+        details: {
+          durationMs,
+          source: query.source ?? 'all',
+          sourceCount: result.sources.length,
+        },
+      });
+    }
+
+    return result;
+  }
+  private async buildCsFloatCoverageDiagnostics(): Promise<
+    CsFloatCoverageDiagnosticsDto | undefined
+  > {
+    const scannerUniverse = await this.scannerUniverseService.getScannerUniverse({
+      limit: CSFLOAT_HOT_COVERAGE_WINDOW_SIZE,
+    });
+    const hotVariantIds = scannerUniverse.items
+      .filter((item) => item.tier === 'hot')
+      .map((item) => item.itemVariantId);
+    const coverage = await this.diagnosticsRepository.getCsFloatCoverageMetrics({
+      hotVariantIds,
+      recentDetailFetchLimit: CSFLOAT_DETAIL_FETCH_RATIO_WINDOW_SIZE,
+    });
+    const csfloatHotVariantCoverage =
+      coverage.hotVariantCount > 0
+        ? coverage.csfloatCoveredHotVariantCount / coverage.hotVariantCount
+        : 0;
+    const csfloatListingsPerHotVariant =
+      coverage.hotVariantCount > 0
+        ? coverage.csfloatActiveListingsOnHotVariants / coverage.hotVariantCount
+        : 0;
+    const usefulDetailFetchRatio =
+      coverage.recentDetailFetchCount > 0
+        ? coverage.recentUsefulDetailFetchCount /
+          coverage.recentDetailFetchCount
+        : undefined;
+
+    return {
+      skinportTrackedVariantCount: coverage.skinportTrackedVariantCount,
+      csfloatTrackedVariantCount: coverage.csfloatTrackedVariantCount,
+      overlapWithSkinportCount: coverage.overlapWithSkinportCount,
+      csfloatOverlapEligibleVariantCount:
+        coverage.csfloatOverlapEligibleVariantCount,
+      csfloatCoverageGapVsSkinport: Math.max(
+        0,
+        coverage.skinportTrackedVariantCount -
+          coverage.overlapWithSkinportCount,
+      ),
+      hotVariantCount: coverage.hotVariantCount,
+      csfloatCoveredHotVariantCount: coverage.csfloatCoveredHotVariantCount,
+      csfloatHotVariantCoverage: Number(
+        csfloatHotVariantCoverage.toFixed(4),
+      ),
+      csfloatActiveListingCount: coverage.csfloatActiveListingCount,
+      csfloatListingsPerHotVariant: Number(
+        csfloatListingsPerHotVariant.toFixed(4),
+      ),
+      recentDetailFetchCount: coverage.recentDetailFetchCount,
+      recentUsefulDetailFetchCount: coverage.recentUsefulDetailFetchCount,
+      ...(usefulDetailFetchRatio !== undefined
+        ? { usefulDetailFetchRatio: Number(usefulDetailFetchRatio.toFixed(4)) }
+        : {}),
     };
   }
 
@@ -401,17 +685,17 @@ export class DiagnosticsService implements DiagnosticsUseCase {
     this.assertAdminUser(user, 'source pair overlap diagnostics');
 
     const generatedAt = new Date();
-    const [sourceOverviewRecords, overlapCoverage, sourcePairs, engineResult] =
-      await Promise.all([
-        this.diagnosticsRepository.listSourceOverviewRecords(),
-        this.diagnosticsRepository.getOverlapCoverage(),
-        this.diagnosticsRepository.listPairableVariantCountsBySourcePair(),
-        this.evaluateScannerUniverse({
-          limit: query.limit ?? DEFAULT_REJECT_SCAN_LIMIT,
-          maxPairsPerItem: DEFAULT_REJECT_MAX_PAIRS,
-          includeRejected: true,
-        }),
-      ]);
+    const [
+      sourceOverviewRecords,
+      overlapCoverage,
+      sourcePairs,
+      latestOpportunityRescan,
+    ] = await Promise.all([
+      this.diagnosticsRepository.listSourceOverviewRecords(),
+      this.diagnosticsRepository.getOverlapCoverage(),
+      this.diagnosticsRepository.listPairableVariantCountsBySourcePair(),
+      this.diagnosticsRepository.findLatestOpportunityRescanRecord(),
+    ]);
     const sourceOverviewByCode = new Map(
       sourceOverviewRecords.map(
         (sourceRecord) => [sourceRecord.code, sourceRecord] as const,
@@ -438,7 +722,9 @@ export class DiagnosticsService implements DiagnosticsUseCase {
             sourceOverviewByCode.get(pair.rightSourceCode),
           ),
         ),
-      rejectedByBucket: this.buildRejectedPairBucketCounts(engineResult),
+      rejectedByBucket: this.buildRejectedPairBucketCountsFromRescan(
+        latestOpportunityRescan?.result,
+      ),
     };
   }
 
@@ -475,24 +761,34 @@ export class DiagnosticsService implements DiagnosticsUseCase {
     );
     const limit = query.limit ?? DEFAULT_RECORD_LIMIT;
     const fetchLimit = Math.max(limit * 6, 100);
-    const [jobRuns, syncStatuses, healthMetrics] = await Promise.all([
-      this.diagnosticsRepository.listRecentJobRuns({
-        ...(query.source ? { source: query.source } : {}),
-        since,
-        limit: Math.min(MAX_UNRESOLVED_SIGNAL_SCAN, fetchLimit),
-      }),
-      this.diagnosticsRepository.listRecentSourceSyncStatuses({
-        ...(query.source ? { source: query.source } : {}),
-        since,
-        limit: Math.min(MAX_UNRESOLVED_SIGNAL_SCAN, fetchLimit),
-      }),
-      this.diagnosticsRepository.listRecentHealthMetrics({
-        ...(query.source ? { source: query.source } : {}),
-        since,
-        limit: Math.min(MAX_UNRESOLVED_SIGNAL_SCAN, fetchLimit),
-      }),
-    ]);
+    const [pendingMappings, jobRuns, syncStatuses, healthMetrics] =
+      await Promise.all([
+        this.diagnosticsRepository.listRecentPendingSourceMappings({
+          ...(query.source ? { source: query.source } : {}),
+          since,
+          unresolvedOnly: true,
+          limit: Math.min(MAX_UNRESOLVED_SIGNAL_SCAN, fetchLimit),
+        }),
+        this.diagnosticsRepository.listRecentJobRuns({
+          ...(query.source ? { source: query.source } : {}),
+          since,
+          limit: Math.min(MAX_UNRESOLVED_SIGNAL_SCAN, fetchLimit),
+        }),
+        this.diagnosticsRepository.listRecentSourceSyncStatuses({
+          ...(query.source ? { source: query.source } : {}),
+          since,
+          limit: Math.min(MAX_UNRESOLVED_SIGNAL_SCAN, fetchLimit),
+        }),
+        this.diagnosticsRepository.listRecentHealthMetrics({
+          ...(query.source ? { source: query.source } : {}),
+          since,
+          limit: Math.min(MAX_UNRESOLVED_SIGNAL_SCAN, fetchLimit),
+        }),
+      ]);
     const signals = [
+      ...pendingMappings.map((mapping) =>
+        this.toUnresolvedSignalFromPendingMapping(mapping),
+      ),
       ...jobRuns.flatMap((jobRun) =>
         this.extractUnresolvedSignalsFromJobRun(jobRun),
       ),
@@ -550,7 +846,7 @@ export class DiagnosticsService implements DiagnosticsUseCase {
     return {
       generatedAt,
       lookbackHours,
-      note: 'Best-effort inference from stored sync/job/health warning text. Add a first-class unresolved mapping table if you need exact backlog accounting.',
+      note: 'Pending mappings are first-class backlog records from the ingestion pipeline. Job/sync/health text signals are kept as fallback evidence for parser drift.',
       items: [...groupedSignals.values()]
         .sort((left, right) => {
           if (right.occurrences !== left.occurrences) {
@@ -807,9 +1103,14 @@ export class DiagnosticsService implements DiagnosticsUseCase {
   private toSourceHealthDashboardItem(
     sourceRecord: DiagnosticsSourceOverviewRecord,
     freshness: DiagnosticsFreshnessCountsDto,
+    runtimeState?: Awaited<
+      ReturnType<SourceRuntimeGuardService['inspect']>
+    >,
   ): SourceHealthDashboardItemDto {
     const latestHealthMetric = sourceRecord.latestHealthMetric;
     const healthStatus = this.resolveHealthStatus(sourceRecord);
+    const sourceMetadata = this.toJsonObject(sourceRecord.metadata);
+    const operationalMetadata = this.toJsonObject(sourceMetadata.operational);
     const lastSuccessfulSyncAt = this.maxDate(
       ...sourceRecord.syncStatuses.map(
         (syncStatus) => syncStatus.lastSuccessfulAt,
@@ -826,6 +1127,19 @@ export class DiagnosticsService implements DiagnosticsUseCase {
       sourceName: sourceRecord.name,
       sourceKind: sourceRecord.kind,
       isEnabled: sourceRecord.isEnabled,
+      ...(typeof operationalMetadata.integrationModel === 'string'
+        ? { integrationModel: operationalMetadata.integrationModel }
+        : {}),
+      ...(typeof operationalMetadata.stage === 'string'
+        ? { operationalStage: operationalMetadata.stage }
+        : {}),
+      ...(runtimeState ? { runtimeState: runtimeState.mode } : {}),
+      ...(runtimeState?.reason ? { runtimeReason: runtimeState.reason } : {}),
+      requiresProxy: operationalMetadata.proxyRequirement === 'required',
+      requiresSession:
+        operationalMetadata.sessionRequirement === 'required' ||
+        operationalMetadata.cookieRequirement === 'required',
+      requiresAccount: operationalMetadata.accountRequirement === 'required',
       healthStatus,
       ...(latestHealthMetric?.recordedAt
         ? { healthCheckedAt: latestHealthMetric.recordedAt }
@@ -888,6 +1202,26 @@ export class DiagnosticsService implements DiagnosticsUseCase {
       ...(sourceRecord.latestJobRun
         ? { latestJobRun: this.toJobRunHistoryItem(sourceRecord.latestJobRun) }
         : {}),
+    };
+  }
+
+  private toUnresolvedSignalFromPendingMapping(
+    mapping: DiagnosticsPendingSourceMappingRecord,
+  ): UnresolvedSignal {
+    const itemHint =
+      mapping.normalizedTitle ??
+      mapping.title ??
+      mapping.sourceItemId;
+
+    return {
+      source: mapping.sourceCode,
+      sourceName: mapping.sourceName,
+      message:
+        mapping.resolutionNote?.trim() ||
+        `Pending ${mapping.kind.toLowerCase()} mapping in ${mapping.endpointName}.`,
+      detectedAt: mapping.observedAt,
+      evidenceKind: 'pending-mapping',
+      ...(itemHint ? { itemHint } : {}),
     };
   }
 
@@ -1111,6 +1445,161 @@ export class DiagnosticsService implements DiagnosticsUseCase {
     );
   }
 
+  private toSourceTimestampMap(
+    records: readonly {
+      readonly sourceCode: RateLimitBurnMetricDto['source'];
+      readonly timestamp: Date;
+    }[],
+  ): ReadonlyMap<RateLimitBurnMetricDto['source'], Date> {
+    return new Map(
+      records.map((record) => [record.sourceCode, record.timestamp] as const),
+    );
+  }
+
+  private toSourceEndpointTimestampMap(
+    records: readonly {
+      readonly sourceCode: RateLimitBurnMetricDto['source'];
+      readonly endpointName: string;
+      readonly latestObservedAt: Date;
+    }[],
+  ): ReadonlyMap<
+    RateLimitBurnMetricDto['source'],
+    ReadonlyMap<string, Date>
+  > {
+    const recordsBySource = new Map<
+      RateLimitBurnMetricDto['source'],
+      Map<string, Date>
+    >();
+
+    for (const record of records) {
+      const endpointMap =
+        recordsBySource.get(record.sourceCode) ?? new Map<string, Date>();
+
+      endpointMap.set(record.endpointName, record.latestObservedAt);
+      recordsBySource.set(record.sourceCode, endpointMap);
+    }
+
+    return new Map(
+      [...recordsBySource.entries()].map(([sourceCode, endpointMap]) => [
+        sourceCode,
+        endpointMap,
+      ]),
+    );
+  }
+
+  private resolveLatestStateCapableRawObservedAt(
+    source: RateLimitBurnMetricDto['source'],
+    endpointTimestamps?: ReadonlyMap<string, Date>,
+  ): Date | undefined {
+    if (!endpointTimestamps) {
+      return undefined;
+    }
+
+    return this.maxDate(
+      ...this.getStateCapableRawEndpoints(source).map((endpointName) =>
+        endpointTimestamps.get(endpointName),
+      ),
+    );
+  }
+
+  private getStateCapableRawEndpoints(
+    source: RateLimitBurnMetricDto['source'],
+  ): readonly string[] {
+    switch (source) {
+      case 'skinport':
+        return ['skinport-items-snapshot', 'skinport-sales-history'];
+      case 'csfloat':
+        return ['csfloat-listings', 'csfloat-listing-detail'];
+      case 'dmarket':
+        return ['dmarket-market-items'];
+      case 'waxpeer':
+        return ['waxpeer-mass-info'];
+      case 'steam-snapshot':
+        return ['steam-snapshot-priceoverview-batch'];
+      case 'backup-aggregator':
+        return ['provider-managed'];
+      case 'bitskins':
+        return ['bitskins-listings'];
+      case 'youpin':
+        return ['youpin-listings'];
+      case 'c5game':
+        return ['c5game-listings'];
+      case 'csmoney':
+        return ['csmoney-listings'];
+    }
+  }
+
+  private toRatio(numerator: number, denominator: number): number {
+    return Number((numerator / Math.max(1, denominator)).toFixed(2));
+  }
+
+  private buildOverlapSummaryBySource(
+    pairs: readonly DiagnosticsSourcePairOverlapRecord[],
+  ): ReadonlyMap<
+    SourceAdapterKey,
+    {
+      readonly canonicalOverlapVariantCount: number;
+      readonly pairableOverlapVariantCount: number;
+      readonly blockedOverlapVariantCount: number;
+      readonly averageOverlapQualityScore?: number;
+    }
+  > {
+    const aggregates = new Map<
+      SourceAdapterKey,
+      {
+        canonicalOverlapVariantCount: number;
+        pairableOverlapVariantCount: number;
+        blockedOverlapVariantCount: number;
+        overlapQualityScoreTotal: number;
+        overlapQualityScoreCount: number;
+      }
+    >();
+
+    for (const pair of pairs) {
+      for (const source of [pair.leftSourceCode, pair.rightSourceCode]) {
+        const current = aggregates.get(source) ?? {
+          canonicalOverlapVariantCount: 0,
+          pairableOverlapVariantCount: 0,
+          blockedOverlapVariantCount: 0,
+          overlapQualityScoreTotal: 0,
+          overlapQualityScoreCount: 0,
+        };
+
+        current.canonicalOverlapVariantCount += pair.canonicalOverlapCount;
+        current.pairableOverlapVariantCount += pair.pairableVariantCount;
+        current.blockedOverlapVariantCount += pair.blockedVariantCount;
+
+        if (pair.canonicalOverlapCount > 0) {
+          current.overlapQualityScoreTotal += pair.overlapQualityScore;
+          current.overlapQualityScoreCount += 1;
+        }
+
+        aggregates.set(source, current);
+      }
+    }
+
+    return new Map(
+      [...aggregates.entries()].map(([source, aggregate]) => [
+        source,
+        {
+          canonicalOverlapVariantCount: aggregate.canonicalOverlapVariantCount,
+          pairableOverlapVariantCount: aggregate.pairableOverlapVariantCount,
+          blockedOverlapVariantCount: aggregate.blockedOverlapVariantCount,
+          ...(aggregate.overlapQualityScoreCount > 0
+            ? {
+                averageOverlapQualityScore: Number(
+                  (
+                    aggregate.overlapQualityScoreTotal /
+                    aggregate.overlapQualityScoreCount
+                  ).toFixed(4),
+                ),
+              }
+            : {}),
+        },
+      ]),
+    );
+  }
+
   private toSourcePairOverlapItem(
     pair: DiagnosticsSourcePairOverlapRecord,
     leftSourceOverview?: DiagnosticsSourceOverviewRecord,
@@ -1149,7 +1638,10 @@ export class DiagnosticsService implements DiagnosticsUseCase {
       leftSourceName: pair.leftSourceName,
       rightSource: pair.rightSourceCode,
       rightSourceName: pair.rightSourceName,
+      canonicalOverlapCount: pair.canonicalOverlapCount,
       pairableVariantCount: pair.pairableVariantCount,
+      blockedVariantCount: pair.blockedVariantCount,
+      overlapQualityScore: pair.overlapQualityScore,
       pairBuildingAllowed,
       pairPolicy,
     };
@@ -1272,6 +1764,27 @@ export class DiagnosticsService implements DiagnosticsUseCase {
     return counts;
   }
 
+  private buildRejectedPairBucketCountsFromRescan(
+    value: unknown,
+  ): PairRejectionBucketCountsDto {
+    const result = this.toJsonObject(value);
+    const pairFunnel = this.toJsonObject(result.pairFunnel);
+
+    return {
+      sourcePolicy:
+        (this.readNumber(pairFunnel.sellSourceHasNoExitSignal) ?? 0) +
+        (this.readNumber(pairFunnel.listedExitOnly) ?? 0),
+      confidence:
+        this.readNumber(pairFunnel.confidenceBelowCandidateFloor) ?? 0,
+      freshness: this.readNumber(pairFunnel.preScoreRejected) ?? 0,
+      missingAsk: this.readNumber(pairFunnel.buySourceHasNoAsk) ?? 0,
+      categoryRules:
+        (this.readNumber(pairFunnel.trueNonPositiveEdge) ??
+          this.readNumber(pairFunnel.negativeExpectedNet)) ??
+        0,
+    };
+  }
+
   private async evaluateScannerUniverse(input: {
     readonly tier?: 'hot' | 'warm' | 'cold';
     readonly category?: Parameters<
@@ -1343,10 +1856,22 @@ export class DiagnosticsService implements DiagnosticsUseCase {
         note: 'Detail fetch budget; used only when listing data is incomplete.',
       },
       {
+        source: 'dmarket',
+        endpointName: 'dmarket-market-items',
+        windowLimit: this.configService.dmarketRateLimitMaxRequests,
+        note: 'Signed DMarket title-targeted market-items budget.',
+      },
+      {
+        source: 'waxpeer',
+        endpointName: 'waxpeer-mass-info',
+        windowLimit: this.configService.waxpeerRateLimitMaxRequests,
+        note: 'Official Waxpeer mass-info batch budget shared with search endpoints.',
+      },
+      {
         source: 'bitskins',
         endpointName: 'bitskins-listings',
         windowLimit: this.configService.bitskinsRateLimitMaxRequests,
-        note: 'BitSkins overlap-first snapshot budget.',
+        note: 'BitSkins bounded full-snapshot target-filter budget.',
       },
       {
         source: 'youpin',
@@ -1464,22 +1989,19 @@ export class DiagnosticsService implements DiagnosticsUseCase {
       : undefined;
   }
 
-  private readNumberProperty(
-    value: Prisma.JsonValue | null,
-    propertyName: string,
-  ): number | undefined {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return undefined;
+  private readNumberProperty(value: unknown, propertyName: string): number | undefined {
+    const record = this.toJsonObject(value);
+
+    return this.readNumber(record[propertyName]);
+  }
+
+  private readNumber(value: unknown): number | undefined {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
     }
 
-    const propertyValue = (value as Record<string, unknown>)[propertyName];
-
-    if (typeof propertyValue === 'number' && Number.isFinite(propertyValue)) {
-      return propertyValue;
-    }
-
-    if (typeof propertyValue === 'string') {
-      const parsedValue = Number(propertyValue);
+    if (typeof value === 'string') {
+      const parsedValue = Number(value);
 
       return Number.isFinite(parsedValue) ? parsedValue : undefined;
     }
@@ -1487,9 +2009,7 @@ export class DiagnosticsService implements DiagnosticsUseCase {
     return undefined;
   }
 
-  private toJsonObject(
-    value: Prisma.JsonValue | null,
-  ): Readonly<Record<string, unknown>> {
+  private toJsonObject(value: unknown): Readonly<Record<string, unknown>> {
     return value && typeof value === 'object' && !Array.isArray(value)
       ? (value as Record<string, unknown>)
       : {};

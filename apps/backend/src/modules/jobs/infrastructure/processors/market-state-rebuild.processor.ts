@@ -52,7 +52,7 @@ export class MarketStateRebuildProcessor extends WorkerHost {
         ...(serializedResult !== null ? { result: serializedResult } : {}),
       });
       this.logger.log(
-        `Completed scheduled market-state rebuild with ${result.rebuiltStateCount} rebuilt states from ${result.processedSnapshotCount} snapshots.`,
+        `Completed scheduled market-state rebuild with ${result.rebuiltStateCount} rebuilt states from ${result.processedSnapshotCount} snapshots; unchanged projection skips ${result.unchangedProjectionSkipCount}.`,
         MarketStateRebuildProcessor.name,
       );
 

@@ -1,5 +1,6 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 
+import { CatalogAliasNormalizationService } from '../../catalog/services/catalog-alias-normalization.service';
 import type { ArchivedRawPayloadDto } from '../dto/archived-raw-payload.dto';
 import type {
   CsFloatListingDetailEnvelopeDto,
@@ -8,13 +9,19 @@ import type {
 } from '../dto/csfloat-listing-payload.dto';
 import type { NormalizedMarketListingDto } from '../dto/normalized-market-listing.dto';
 import type { NormalizedSourcePayloadDto } from '../dto/normalized-source-payload.dto';
-import { CsFloatCatalogLinkerService } from './csfloat-catalog-linker.service';
+import {
+  CsFloatCatalogLinkerService,
+  type ResolveCsFloatListingInput,
+} from './csfloat-catalog-linker.service';
 
 @Injectable()
 export class CsFloatPayloadNormalizerService {
   constructor(
     @Inject(CsFloatCatalogLinkerService)
     private readonly csfloatCatalogLinkerService: CsFloatCatalogLinkerService,
+    @Optional()
+    @Inject(CatalogAliasNormalizationService)
+    private readonly aliasNormalizationService: CatalogAliasNormalizationService = new CatalogAliasNormalizationService(),
   ) {}
 
   async normalize(
@@ -64,6 +71,9 @@ export class CsFloatPayloadNormalizerService {
       payloadHash: archive.payloadHash,
       listings: normalizedCollection.listings,
       marketStates: [],
+      ...(normalizedCollection.mappingSignals
+        ? { mappingSignals: normalizedCollection.mappingSignals }
+        : {}),
       warnings: normalizedCollection.warnings,
     };
   }
@@ -95,6 +105,9 @@ export class CsFloatPayloadNormalizerService {
       payloadHash: archive.payloadHash,
       listings: normalizedCollection.listings,
       marketStates: [],
+      ...(normalizedCollection.mappingSignals
+        ? { mappingSignals: normalizedCollection.mappingSignals }
+        : {}),
       warnings: normalizedCollection.warnings,
     };
   }
@@ -104,37 +117,38 @@ export class CsFloatPayloadNormalizerService {
     listings: readonly CsFloatListingDto[],
   ): Promise<{
     readonly listings: readonly NormalizedMarketListingDto[];
+    readonly mappingSignals?: NonNullable<
+      NormalizedSourcePayloadDto['mappingSignals']
+    >;
     readonly warnings: readonly string[];
   }> {
     const normalizedListings: NormalizedMarketListingDto[] = [];
+    const mappingSignals: Array<
+      NonNullable<NormalizedSourcePayloadDto['mappingSignals']>[number]
+    > = [];
     const warnings: string[] = [];
+    const activeListings = listings.filter((listing) =>
+      this.isActiveListing(listing.state),
+    );
+    const runContext = this.csfloatCatalogLinkerService.createRunContext();
+    const resolutionInputs = activeListings.map((listing) =>
+      this.buildResolutionInput(listing),
+    );
+    const resolutions = await this.csfloatCatalogLinkerService.resolveOrCreateMany(
+      resolutionInputs,
+      runContext,
+    );
 
-    for (const listing of listings) {
-      if (!this.isActiveListing(listing.state)) {
+    for (const [index, listing] of activeListings.entries()) {
+      const linkedItem = resolutions[index];
+      const resolutionInput = resolutionInputs[index];
+      const normalizedTitle = this.aliasNormalizationService.normalizeMarketHashName(
+        listing.item.marketHashName,
+      );
+
+      if (!linkedItem || !resolutionInput) {
         continue;
       }
-
-      const linkedItem = await this.csfloatCatalogLinkerService.resolveOrCreate(
-        {
-          marketHashName: listing.item.marketHashName,
-          ...(listing.item.rarity !== undefined
-            ? { rarity: listing.item.rarity }
-            : {}),
-          ...(listing.item.wearName ? { exterior: listing.item.wearName } : {}),
-          ...(listing.item.isStatTrak !== undefined
-            ? { isStatTrak: listing.item.isStatTrak }
-            : {}),
-          ...(listing.item.isSouvenir !== undefined
-            ? { isSouvenir: listing.item.isSouvenir }
-            : {}),
-          ...(listing.item.defIndex !== undefined
-            ? { defIndex: listing.item.defIndex }
-            : {}),
-          ...(listing.item.paintIndex !== undefined
-            ? { paintIndex: listing.item.paintIndex }
-            : {}),
-        },
-      );
 
       if (
         linkedItem.status !== 'resolved' ||
@@ -142,10 +156,25 @@ export class CsFloatPayloadNormalizerService {
         !linkedItem.itemVariantId
       ) {
         warnings.push(
-          this.buildUnresolvedWarning(listing.item.marketHashName, linkedItem),
+          this.buildUnresolvedWarning(normalizedTitle, linkedItem),
         );
+        mappingSignals.push({
+          kind: 'listing',
+          sourceItemId: listing.item.assetId,
+          title: normalizedTitle,
+          observedAt: archive.observedAt,
+          resolutionNote: this.buildUnresolvedWarning(normalizedTitle, linkedItem),
+          variantHints: this.buildMappingHints(resolutionInput),
+          metadata: {
+            resolutionReason: linkedItem.reason ?? null,
+            warnings: [...linkedItem.warnings],
+          },
+        });
         continue;
       }
+
+      const phaseHint = resolutionInput.phaseHint ?? undefined;
+      const condition = resolutionInput.exterior ?? undefined;
 
       normalizedListings.push({
         source: archive.source,
@@ -153,12 +182,13 @@ export class CsFloatPayloadNormalizerService {
         sourceItemId: listing.item.assetId,
         canonicalItemId: linkedItem.canonicalItemId,
         itemVariantId: linkedItem.itemVariantId,
-        title: listing.item.marketHashName,
+        title: normalizedTitle,
         observedAt: archive.observedAt,
         currency: 'USD',
         priceMinor: listing.price,
         quantityAvailable: 1,
-        ...(listing.item.wearName ? { condition: listing.item.wearName } : {}),
+        ...(condition ? { condition } : {}),
+        ...(phaseHint ? { phase: phaseHint } : {}),
         ...(listing.item.paintSeed !== undefined
           ? { paintSeed: listing.item.paintSeed }
           : {}),
@@ -174,8 +204,10 @@ export class CsFloatPayloadNormalizerService {
           iconUrl: listing.item.iconUrl ?? null,
           collection: listing.item.collection ?? null,
           itemName: listing.item.itemName ?? null,
+          marketHashName: normalizedTitle,
           rarity: listing.item.rarity ?? null,
           quality: listing.item.quality ?? null,
+          phaseHint: phaseHint ?? null,
           tradable: listing.item.tradable ?? null,
           defIndex: listing.item.defIndex ?? null,
           paintIndex: listing.item.paintIndex ?? null,
@@ -210,7 +242,44 @@ export class CsFloatPayloadNormalizerService {
 
     return {
       listings: normalizedListings,
+      ...(mappingSignals.length > 0 ? { mappingSignals } : {}),
       warnings,
+    };
+  }
+
+  private buildResolutionInput(
+    listing: CsFloatListingDto,
+  ): ResolveCsFloatListingInput {
+    const exterior =
+      this.aliasNormalizationService.normalizeExterior(listing.item.wearName) ??
+      this.aliasNormalizationService.extractExteriorFromTitle(
+        listing.item.marketHashName,
+      );
+    const phaseHint = this.resolvePhaseHint([
+      listing.item.itemName,
+      listing.item.marketHashName,
+    ]);
+
+    return {
+      marketHashName: this.aliasNormalizationService.normalizeMarketHashName(
+        listing.item.marketHashName,
+      ),
+      ...(listing.type ? { type: listing.type } : {}),
+      ...(listing.item.rarity !== undefined ? { rarity: listing.item.rarity } : {}),
+      ...(exterior ? { exterior } : {}),
+      ...(listing.item.isStatTrak !== undefined
+        ? { isStatTrak: listing.item.isStatTrak }
+        : {}),
+      ...(listing.item.isSouvenir !== undefined
+        ? { isSouvenir: listing.item.isSouvenir }
+        : {}),
+      ...(listing.item.defIndex !== undefined
+        ? { defIndex: listing.item.defIndex }
+        : {}),
+      ...(listing.item.paintIndex !== undefined
+        ? { paintIndex: listing.item.paintIndex }
+        : {}),
+      ...(phaseHint ? { phaseHint } : {}),
     };
   }
 
@@ -255,6 +324,21 @@ export class CsFloatPayloadNormalizerService {
     return /listed|active/i.test(state);
   }
 
+  private resolvePhaseHint(
+    values: readonly (string | undefined)[],
+  ): string | undefined {
+    for (const value of values) {
+      const phaseHint =
+        this.aliasNormalizationService.normalizePhaseHint(value);
+
+      if (phaseHint) {
+        return phaseHint;
+      }
+    }
+
+    return undefined;
+  }
+
   private buildUnresolvedWarning(
     marketHashName: string,
     resolution: {
@@ -264,5 +348,21 @@ export class CsFloatPayloadNormalizerService {
     },
   ): string {
     return `CSFloat catalog resolver left "${marketHashName}" unresolved at confidence ${resolution.confidence.toFixed(2)}${resolution.reason ? ` (${resolution.reason})` : ''}${resolution.warnings.length > 0 ? `: ${resolution.warnings.join('; ')}` : '.'}`;
+  }
+
+  private buildMappingHints(
+    input: ResolveCsFloatListingInput,
+  ): Record<string, unknown> {
+    return {
+      marketHashName: input.marketHashName,
+      type: input.type ?? null,
+      rarity: input.rarity ?? null,
+      exterior: input.exterior ?? null,
+      isStatTrak: input.isStatTrak ?? null,
+      isSouvenir: input.isSouvenir ?? null,
+      defIndex: input.defIndex ?? null,
+      paintIndex: input.paintIndex ?? null,
+      phaseHint: input.phaseHint ?? null,
+    };
   }
 }

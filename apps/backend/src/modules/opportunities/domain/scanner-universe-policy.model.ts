@@ -39,6 +39,8 @@ export const SCANNER_CATEGORY_POLICIES: Readonly<
     sourceBias: {
       skinport: 12,
       csfloat: 10,
+      dmarket: 10,
+      waxpeer: 9,
       bitskins: 10,
       youpin: 8,
       c5game: 7,
@@ -47,6 +49,8 @@ export const SCANNER_CATEGORY_POLICIES: Readonly<
     pollIntervalMultiplier: {
       skinport: 1,
       csfloat: 0.85,
+      dmarket: 0.9,
+      waxpeer: 0.95,
       bitskins: 0.95,
       youpin: 1,
       c5game: 1.1,
@@ -69,6 +73,8 @@ export const SCANNER_CATEGORY_POLICIES: Readonly<
     },
     sourceBias: {
       csfloat: 12,
+      dmarket: 11,
+      waxpeer: 10,
       bitskins: 11,
       youpin: 9,
       c5game: 8,
@@ -79,6 +85,8 @@ export const SCANNER_CATEGORY_POLICIES: Readonly<
     pollIntervalMultiplier: {
       skinport: 1.25,
       csfloat: 1,
+      dmarket: 1.05,
+      waxpeer: 1.05,
       bitskins: 1.05,
       youpin: 1.1,
       c5game: 1.2,
@@ -101,6 +109,8 @@ export const SCANNER_CATEGORY_POLICIES: Readonly<
     },
     sourceBias: {
       csfloat: 12,
+      dmarket: 11,
+      waxpeer: 10,
       bitskins: 11,
       youpin: 9,
       c5game: 8,
@@ -111,6 +121,8 @@ export const SCANNER_CATEGORY_POLICIES: Readonly<
     pollIntervalMultiplier: {
       skinport: 1.2,
       csfloat: 1,
+      dmarket: 1.05,
+      waxpeer: 1.05,
       bitskins: 1.05,
       youpin: 1.1,
       c5game: 1.2,
@@ -134,6 +146,8 @@ export const SCANNER_CATEGORY_POLICIES: Readonly<
     sourceBias: {
       skinport: 14,
       csfloat: 8,
+      dmarket: 8,
+      waxpeer: 8,
       bitskins: 8,
       youpin: 7,
       c5game: 6,
@@ -142,6 +156,8 @@ export const SCANNER_CATEGORY_POLICIES: Readonly<
     pollIntervalMultiplier: {
       skinport: 0.8,
       csfloat: 0.95,
+      dmarket: 0.95,
+      waxpeer: 0.95,
       bitskins: 1,
       youpin: 1.05,
       c5game: 1.2,
@@ -165,6 +181,8 @@ export const SCANNER_CATEGORY_POLICIES: Readonly<
     sourceBias: {
       skinport: 12,
       csfloat: 8,
+      dmarket: 8,
+      waxpeer: 8,
       bitskins: 8,
       youpin: 7,
       c5game: 6,
@@ -173,6 +191,8 @@ export const SCANNER_CATEGORY_POLICIES: Readonly<
     pollIntervalMultiplier: {
       skinport: 0.85,
       csfloat: 1,
+      dmarket: 0.95,
+      waxpeer: 0.95,
       bitskins: 1,
       youpin: 1.05,
       c5game: 1.2,
@@ -195,6 +215,16 @@ export const SCANNER_SOURCE_POLL_INTERVAL_SECONDS: Readonly<
     hot: 60,
     warm: 300,
     cold: 900,
+  },
+  dmarket: {
+    hot: 120,
+    warm: 480,
+    cold: 1800,
+  },
+  waxpeer: {
+    hot: 120,
+    warm: 480,
+    cold: 1800,
   },
   bitskins: {
     hot: 120,

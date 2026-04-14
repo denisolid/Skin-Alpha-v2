@@ -1,6 +1,7 @@
 import Link from 'next/link';
 
 import {
+  formatTokenLabel,
   formatCurrency,
   formatDateTime,
   formatScore,
@@ -9,6 +10,7 @@ import {
   getSourcePairLabel,
 } from '../lib/format';
 import type {
+  OpportunityFeedDiagnostics,
   OpportunityFullFeedItem,
   OpportunityPublicFeedItem,
 } from '../lib/types';
@@ -18,24 +20,107 @@ interface OpportunitiesTableProps {
     | OpportunityPublicFeedItem
     | OpportunityFullFeedItem
   )[];
-  readonly selectedItemVariantId?: string | undefined;
-  readonly selectedSourcePair?: string | undefined;
+  readonly selectedOpportunityKey?: string | undefined;
   readonly queryString?: string | undefined;
   readonly detailAccess: 'full' | 'upgrade' | 'sign-in';
+  readonly diagnostics?: OpportunityFeedDiagnostics;
+  readonly sourceCoverageNote?: string;
 }
 
 export function OpportunitiesTable({
   items,
-  selectedItemVariantId,
-  selectedSourcePair,
+  selectedOpportunityKey,
   queryString,
   detailAccess,
+  diagnostics,
+  sourceCoverageNote,
 }: OpportunitiesTableProps) {
   if (items.length === 0) {
+    const topRejectStages =
+      diagnostics?.rejectionSummary.primaryRejectStages.slice(0, 3);
+    const topSourcePairs = diagnostics?.overlapBySourcePair.slice(0, 3);
+    const topPipelineDiagnostics = diagnostics?.pipelineDiagnostics
+      .filter((entry) => entry.count > 0)
+      .slice(0, 4);
+
     return (
       <div className="empty-state">
-        No opportunities matched the current filters. Loosen profit or
-        confidence thresholds and try again.
+        <p>No visible opportunities were produced from the current market slice.</p>
+        {diagnostics ? (
+          <>
+            <p>
+              Scanned {diagnostics.scannedVariantCount} variants and evaluated{' '}
+              {diagnostics.evaluatedPairCount} source pairs. Visible feed rows:{' '}
+              {diagnostics.validOpportunityCount}. Eligible rows:{' '}
+              {diagnostics.feedEligibleCount}.
+            </p>
+            <p>
+              Counter-source variants:{' '}
+              {diagnostics.variantsWithCounterSourceCandidate}. Variants with
+              overlap but no pairable pair:{' '}
+              {
+                diagnostics.rejectionSummary
+                  .variantsRejectedForLowOverlapOrLowPairability
+              }
+              . Pairable pairs: {diagnostics.pairableCount}. Blocked before
+              pairability: {diagnostics.blockedBeforePairabilityCount}. Blocked
+              after pairability: {diagnostics.blockedAfterPairabilityCount}.
+            </p>
+            <p>
+              Listed-exit-only pairs: {diagnostics.listedExitOnlyCount}. Near
+              misses: {diagnostics.nearMissCandidateCount}. Blocked but present
+              pairs: {diagnostics.blockedButPresentCount}.
+            </p>
+            <p>
+              Pre-pair rejects: strict identity{' '}
+              {diagnostics.strictVariantIdentityRejectCount}, expired sources{' '}
+              {diagnostics.staleRejectCount}, missing market signal{' '}
+              {diagnostics.missingMarketSignalRejectCount}.
+            </p>
+            {topSourcePairs && topSourcePairs.length > 0 ? (
+              <p>
+                Top source overlap:{' '}
+                {topSourcePairs
+                  .map(
+                    (entry) =>
+                      `${entry.sourcePairKey} ${entry.overlapCount} overlap / ${entry.pairableVariantCount} pairable / ${entry.blockedBeforePairabilityCount} pre-pair blocked`,
+                  )
+                  .join(', ')}
+                .
+              </p>
+            ) : null}
+            {topRejectStages && topRejectStages.length > 0 ? (
+              <p>
+                Primary reject stages:{' '}
+                {topRejectStages
+                  .map((entry) => `${formatTokenLabel(entry.key)} ${entry.count}`)
+                  .join(', ')}
+                .
+              </p>
+            ) : null}
+            {topPipelineDiagnostics && topPipelineDiagnostics.length > 0 ? (
+              <p>
+                Pipeline diagnostics:{' '}
+                {topPipelineDiagnostics
+                  .map((entry) => `${formatTokenLabel(entry.key)} ${entry.count}`)
+                  .join(', ')}
+                .
+              </p>
+            ) : null}
+            {diagnostics.hiddenByFeedQueryFilters > 0 ? (
+              <p>
+                Current feed filters hid {diagnostics.hiddenByFeedQueryFilters}{' '}
+                otherwise visible rows.
+              </p>
+            ) : null}
+            {sourceCoverageNote ? <p>{sourceCoverageNote}</p> : null}
+          </>
+        ) : (
+          <p>
+            No visible opportunity passed source-overlap, variant-match,
+            freshness, and execution gates.
+          </p>
+        )}
       </div>
     );
   }
@@ -59,17 +144,14 @@ export function OpportunitiesTable({
             const [buySource, sellSource] = getSourcePairLabel(
               item.sourcePairKey,
             );
-            const isActive =
-              item.itemVariantId === selectedItemVariantId &&
-              item.sourcePairKey === selectedSourcePair;
+            const isActive = item.opportunityKey === selectedOpportunityKey;
             const selectionParams = new URLSearchParams(queryString ?? '');
 
-            selectionParams.set('selectedItemVariantId', item.itemVariantId);
-            selectionParams.set('selectedSourcePair', item.sourcePairKey);
+            selectionParams.set('selectedOpportunityKey', item.opportunityKey);
 
             return (
               <tr
-                key={`${item.itemVariantId}:${item.sourcePairKey}`}
+                key={item.opportunityKey}
                 className={`table-row${isActive ? ' table-row-active' : ''}`}
               >
                 <td>
@@ -78,7 +160,15 @@ export function OpportunitiesTable({
                     <div className="item-meta">
                       <span>{item.canonicalDisplayName}</span>
                       <span className="tier-pill">{item.tier}</span>
+                      <span className="tier-pill">
+                        {formatTokenLabel(item.surfaceTier)}
+                      </span>
                     </div>
+                    {item.blockerReason ? (
+                      <div className="item-meta">
+                        <span>blocker: {formatTokenLabel(item.blockerReason)}</span>
+                      </div>
+                    ) : null}
                   </div>
                 </td>
                 <td>
@@ -114,8 +204,8 @@ export function OpportunitiesTable({
                     {detailAccess === 'full' ? (
                       <Link
                         className="button-secondary"
-                        href={`/opportunities/${item.itemVariantId}?sourcePair=${encodeURIComponent(
-                          item.sourcePairKey,
+                        href={`/opportunities/${encodeURIComponent(
+                          item.opportunityKey,
                         )}`}
                       >
                         Detail

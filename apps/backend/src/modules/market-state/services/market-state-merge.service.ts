@@ -1,5 +1,6 @@
+import { ItemCategory } from '@prisma/client';
 import { NotFoundException } from '@nestjs/common';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 
 import {
   MARKET_READ_REPOSITORY,
@@ -37,8 +38,14 @@ interface JsonRecord {
 
 const DEFAULT_FALLBACK_SCAN_LIMIT = 50;
 
+interface VariantMatrixOptions {
+  readonly allowHistoricalFallback?: boolean;
+}
+
 @Injectable()
 export class MarketStateMergeService {
+  private readonly logger = new Logger(MarketStateMergeService.name);
+
   constructor(
     @Inject(MARKET_READ_REPOSITORY)
     private readonly marketStateRepository: MarketReadRepository,
@@ -54,28 +61,63 @@ export class MarketStateMergeService {
 
   async getVariantMatrix(
     itemVariantId: string,
+    options: VariantMatrixOptions = {},
   ): Promise<MergedMarketMatrixDto> {
-    // Scanner-facing reads come from persisted normalized state only.
-    const generatedAt = new Date();
-    const [variantRecord, snapshotHistory] = await Promise.all([
-      this.marketStateRepository.findVariantRecord(itemVariantId),
-      this.marketSnapshotService.getVariantSnapshotHistoryRecords(
-        itemVariantId,
-        DEFAULT_FALLBACK_SCAN_LIMIT,
-      ),
-    ]);
+    const [matrix] = await this.getVariantMatrices([itemVariantId], options);
 
-    if (!variantRecord) {
+    if (!matrix) {
       throw new NotFoundException(
         `Item variant '${itemVariantId}' was not found in market state.`,
       );
     }
 
-    return this.buildVariantMatrix(variantRecord, snapshotHistory, generatedAt);
+    return matrix;
+  }
+
+  async getVariantMatrices(
+    itemVariantIds: readonly string[],
+    options: VariantMatrixOptions = {},
+  ): Promise<readonly MergedMarketMatrixDto[]> {
+    const generatedAt = new Date();
+    const uniqueItemVariantIds = [...new Set(itemVariantIds)];
+    const variantRecords = await this.marketStateRepository.findVariantRecords(
+      uniqueItemVariantIds,
+    );
+
+    if (variantRecords.length !== uniqueItemVariantIds.length) {
+      const foundVariantIds = new Set(
+        variantRecords.map((variantRecord) => variantRecord.itemVariantId),
+      );
+      const missingVariantId = uniqueItemVariantIds.find(
+        (itemVariantId) => !foundVariantIds.has(itemVariantId),
+      );
+
+      throw new NotFoundException(
+        `Item variant '${missingVariantId ?? uniqueItemVariantIds[0]}' was not found in market state.`,
+      );
+    }
+
+    const snapshotHistoryByVariant =
+      options.allowHistoricalFallback === false
+        ? new Map<string, readonly MarketSnapshotRecord[]>()
+        : await this.loadSnapshotHistoriesIfNeeded(
+            variantRecords,
+            new Map<string, readonly MarketSnapshotRecord[]>(),
+          );
+
+    return variantRecords.map((variantRecord) =>
+      this.buildVariantMatrix(
+        variantRecord,
+        snapshotHistoryByVariant.get(variantRecord.itemVariantId) ?? [],
+        generatedAt,
+        options.allowHistoricalFallback !== false,
+      ),
+    );
   }
 
   async getCanonicalMatrix(
     canonicalItemId: string,
+    options: VariantMatrixOptions = {},
   ): Promise<CanonicalMarketMatrixDto> {
     const generatedAt = new Date();
     const variantRecords =
@@ -89,14 +131,13 @@ export class MarketStateMergeService {
       );
     }
 
-    const snapshotHistories = await Promise.all(
-      variantRecords.map((variantRecord) =>
-        this.marketSnapshotService.getVariantSnapshotHistoryRecords(
-          variantRecord.itemVariantId,
-          DEFAULT_FALLBACK_SCAN_LIMIT,
-        ),
-      ),
-    );
+    const snapshotHistoryByVariant =
+      options.allowHistoricalFallback === false
+        ? new Map<string, readonly MarketSnapshotRecord[]>()
+        : await this.loadSnapshotHistoriesIfNeeded(
+            variantRecords,
+            new Map<string, readonly MarketSnapshotRecord[]>(),
+          );
 
     return {
       generatedAt,
@@ -106,8 +147,9 @@ export class MarketStateMergeService {
       matrices: variantRecords.map((variantRecord, index) =>
         this.buildVariantMatrix(
           variantRecord,
-          snapshotHistories[index] ?? [],
+          snapshotHistoryByVariant.get(variantRecord.itemVariantId) ?? [],
           generatedAt,
+          options.allowHistoricalFallback !== false,
         ),
       ),
     };
@@ -117,9 +159,16 @@ export class MarketStateMergeService {
     variantRecord: MarketStateVariantRecord,
     snapshotHistory: readonly MarketSnapshotRecord[],
     generatedAt: Date,
+    allowHistoricalFallback: boolean,
   ): MergedMarketMatrixDto {
     const provisionalRows = variantRecord.marketStates.map((sourceState) =>
-      this.buildRow(variantRecord, sourceState, snapshotHistory, generatedAt),
+      this.buildRow(
+        variantRecord,
+        sourceState,
+        snapshotHistory,
+        generatedAt,
+        allowHistoricalFallback,
+      ),
     );
     const conflictAnalysis =
       this.marketSourceConflictService.analyze(provisionalRows);
@@ -158,16 +207,72 @@ export class MarketStateMergeService {
     };
   }
 
+  private async loadSnapshotHistoriesIfNeeded(
+    variantRecords: readonly MarketStateVariantRecord[],
+    cache: Map<string, readonly MarketSnapshotRecord[]>,
+  ): Promise<ReadonlyMap<string, readonly MarketSnapshotRecord[]>> {
+    const missingSignalVariants = variantRecords
+      .map((variantRecord) => ({
+        variantRecord,
+        missingSignalSources: this.countMissingSignalSources(variantRecord),
+      }))
+      .filter((entry) => entry.missingSignalSources > 0);
+    const unresolvedVariantIds = missingSignalVariants
+      .map((entry) => entry.variantRecord.itemVariantId)
+      .filter((itemVariantId) => !cache.has(itemVariantId));
+
+    if (unresolvedVariantIds.length === 0) {
+      return cache;
+    }
+
+    const startedAt = Date.now();
+    const snapshotHistories =
+      await this.marketSnapshotService.getVariantSnapshotHistoryRecordMap(
+        unresolvedVariantIds,
+        DEFAULT_FALLBACK_SCAN_LIMIT,
+      );
+    const durationMs = Date.now() - startedAt;
+    let snapshotCount = 0;
+
+    for (const itemVariantId of unresolvedVariantIds) {
+      const snapshotHistory = snapshotHistories.get(itemVariantId) ?? [];
+
+      snapshotCount += snapshotHistory.length;
+      cache.set(itemVariantId, snapshotHistory);
+    }
+
+    if (process.env.NODE_ENV !== 'test' && durationMs >= 250) {
+      this.logger.warn(
+        `slowSnapshotHistoryLookup variantCount=${unresolvedVariantIds.length} missingSignalSources=${missingSignalVariants.reduce((total, entry) => total + entry.missingSignalSources, 0)} snapshotCount=${snapshotCount} durationMs=${durationMs}`,
+      );
+    }
+
+    return cache;
+  }
+
+  private countMissingSignalSources(
+    variantRecord: MarketStateVariantRecord,
+  ): number {
+    return variantRecord.marketStates.filter(
+      (sourceState) =>
+        !this.hasObservedMarketSignal(
+          this.resolveCurrentObservation(sourceState),
+        ),
+    ).length;
+  }
+
   private buildRow(
     variantRecord: MarketStateVariantRecord,
     sourceState: MarketStateSourceRecord,
     snapshotHistory: readonly MarketSnapshotRecord[],
     now: Date,
+    allowHistoricalFallback: boolean,
   ): MergedMarketMatrixRowDto {
     const currentObservation = this.resolveCurrentObservation(sourceState);
     // Historical fallback is explicit: only reuse the last good snapshot when
     // the latest projected state has lost a usable market signal.
     const shouldAttemptFallback =
+      allowHistoricalFallback &&
       !this.hasObservedMarketSignal(currentObservation);
     const historicalFallback = shouldAttemptFallback
       ? this.marketSnapshotService.selectHistoricalFallback(
@@ -250,12 +355,17 @@ export class MarketStateMergeService {
       (ask !== undefined ||
       bid !== undefined ||
       (sourceState.listingCount !== null &&
-        sourceState.listingCount !== undefined)
+        sourceState.listingCount !== undefined &&
+        sourceState.listingCount > 0)
         ? 0.5
         : 0);
 
     return {
-      observedAt: latestSnapshot?.observedAt ?? sourceState.observedAt,
+      observedAt:
+        latestSnapshot &&
+        latestSnapshot.observedAt.getTime() > sourceState.observedAt.getTime()
+          ? latestSnapshot.observedAt
+          : sourceState.observedAt,
       currency: latestSnapshot?.currencyCode ?? sourceState.currencyCode,
       ...(ask !== undefined ? { ask } : {}),
       ...(bid !== undefined ? { bid } : {}),
@@ -311,7 +421,7 @@ export class MarketStateMergeService {
     return (
       observation.ask !== undefined ||
       observation.bid !== undefined ||
-      observation.listedQty !== undefined
+      (observation.listedQty !== undefined && observation.listedQty > 0)
     );
   }
 
@@ -380,24 +490,96 @@ export class MarketStateMergeService {
       this.readNumber(mapping.confidence) ??
       this.readNumber(metadata.confidence) ??
       0.5;
+    const isVanilla = this.readBoolean(mapping.isVanilla) ?? false;
+    const phaseFamily =
+      this.readEnum(mapping.phaseFamily, [
+        'vanilla',
+        'standard',
+        'doppler',
+        'gamma-doppler',
+      ]) ??
+      (isVanilla
+        ? 'vanilla'
+        : this.readBoolean(mapping.isGammaDoppler) === true
+          ? 'gamma-doppler'
+          : this.readBoolean(mapping.isDoppler) === true || phaseLabel
+            ? 'doppler'
+            : 'standard');
+    const isDoppler =
+      this.readBoolean(mapping.isDoppler) ??
+      (phaseFamily === 'doppler' || phaseFamily === 'gamma-doppler');
+    const isGammaDoppler =
+      this.readBoolean(mapping.isGammaDoppler) ?? phaseFamily === 'gamma-doppler';
+    const floatRelevant = this.resolveFloatRelevant({
+      category: variantRecord.category,
+      exterior,
+      isVanilla,
+      rawFloatRelevant:
+        this.readBoolean(mapping.isReferenceFloatRelevant) ?? false,
+    });
     const defIndex = this.readNumber(mapping.defIndex);
     const paintIndex = this.readNumber(mapping.paintIndex);
+    const phaseConfidence =
+      this.readNumber(mapping.phaseConfidence) ??
+      (phaseLabel ? 0.75 : 1);
+    const patternRelevant =
+      this.readBoolean(mapping.isReferencePatternRelevant) ?? false;
+    const patternSensitivity =
+      this.readEnum(mapping.patternSensitivity, [
+        'none',
+        'supported',
+        'required',
+      ]) ?? (patternRelevant ? 'supported' : 'none');
+    const floatSensitivity =
+      this.readEnum(mapping.floatSensitivity, [
+        'none',
+        'supported',
+        'required',
+      ]) ?? (floatRelevant ? 'supported' : 'none');
 
     return {
       ...(marketHashName ? { marketHashName } : {}),
       ...(exterior ? { exterior } : {}),
       ...(phaseLabel ? { phaseLabel } : {}),
+      phaseFamily,
+      phaseConfidence: Number(phaseConfidence.toFixed(4)),
       stattrak: this.readBoolean(mapping.stattrak) ?? false,
       souvenir: this.readBoolean(mapping.souvenir) ?? false,
-      isVanilla: this.readBoolean(mapping.isVanilla) ?? false,
-      patternRelevant:
-        this.readBoolean(mapping.isReferencePatternRelevant) ?? false,
-      floatRelevant:
-        this.readBoolean(mapping.isReferenceFloatRelevant) ?? false,
+      isVanilla,
+      isDoppler,
+      isGammaDoppler,
+      patternRelevant,
+      floatRelevant,
+      patternSensitivity,
+      floatSensitivity,
       mappingConfidence: Number(mappingConfidence.toFixed(4)),
       ...(defIndex !== undefined ? { defIndex } : {}),
       ...(paintIndex !== undefined ? { paintIndex } : {}),
     };
+  }
+
+  private resolveFloatRelevant(input: {
+    readonly category: ItemCategory;
+    readonly exterior?: string | undefined;
+    readonly isVanilla: boolean;
+    readonly rawFloatRelevant: boolean;
+  }): boolean {
+    if (!input.rawFloatRelevant || input.isVanilla) {
+      return false;
+    }
+
+    if (
+      input.category === ItemCategory.KNIFE ||
+      input.category === ItemCategory.GLOVE
+    ) {
+      return true;
+    }
+
+    if (input.category !== ItemCategory.SKIN) {
+      return false;
+    }
+
+    return Boolean(input.exterior);
   }
 
   private buildRowIdentity(
@@ -472,5 +654,15 @@ export class MarketStateMergeService {
     }
 
     return undefined;
+  }
+
+  private readEnum<TValue extends string>(
+    value: unknown,
+    allowed: readonly TValue[],
+  ): TValue | undefined {
+    return typeof value === 'string' &&
+      allowed.includes(value as TValue)
+      ? (value as TValue)
+      : undefined;
   }
 }

@@ -19,7 +19,7 @@ function readServerEnv(
 
 export const SERVER_API_BASE_URL = readServerEnv(
   'SERVER_API_BASE_URL',
-  'http://localhost:3001/api',
+  'http://127.0.0.1:3001/api',
 );
 
 export const SESSION_COOKIE_NAME = readServerEnv(

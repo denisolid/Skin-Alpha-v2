@@ -68,6 +68,9 @@ export interface MarketReadRepository {
   findVariantRecord(
     itemVariantId: string,
   ): Promise<MarketStateVariantRecord | null>;
+  findVariantRecords(
+    itemVariantIds: readonly string[],
+  ): Promise<readonly MarketStateVariantRecord[]>;
   findVariantRecordsByCanonicalItem(
     canonicalItemId: string,
   ): Promise<readonly MarketStateVariantRecord[]>;
@@ -75,4 +78,8 @@ export interface MarketReadRepository {
     itemVariantId: string,
     limit: number,
   ): Promise<readonly MarketSnapshotRecord[]>;
+  findVariantSnapshotHistories(
+    itemVariantIds: readonly string[],
+    limit: number,
+  ): Promise<ReadonlyMap<string, readonly MarketSnapshotRecord[]>>;
 }

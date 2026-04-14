@@ -56,7 +56,33 @@ export interface MarketStateProjectionRecord {
   readonly marketStateId: string;
   readonly latestSnapshotId: string;
   readonly observedAt: Date;
+  readonly snapshotCreated: boolean;
+  readonly unchangedProjectionSkipped: boolean;
   readonly rawPayloadArchiveId?: string | null;
+}
+
+export interface RefreshLatestMarketStateHeartbeatInput {
+  readonly sourceId: string;
+  readonly sourceCode: SourceAdapterKey;
+  readonly equivalentRawPayloadArchiveId: string;
+  readonly observedAt: Date;
+}
+
+export interface RefreshLatestMarketStateHeartbeatForVariantsInput {
+  readonly sourceId: string;
+  readonly sourceCode: SourceAdapterKey;
+  readonly itemVariantIds: readonly string[];
+  readonly observedAt: Date;
+}
+
+export interface RefreshedMarketStateHeartbeatRecord {
+  readonly sourceId: string;
+  readonly sourceCode: SourceAdapterKey;
+  readonly canonicalItemId: string;
+  readonly itemVariantId: string;
+  readonly marketStateId: string;
+  readonly latestSnapshotId: string | null;
+  readonly observedAt: Date;
 }
 
 export interface MarketStateWriteRepository {
@@ -72,4 +98,10 @@ export interface MarketStateWriteRepository {
   projectLatestStateFromSnapshot(
     snapshot: LatestMarketSnapshotProjectionRecord,
   ): Promise<MarketStateProjectionRecord>;
+  refreshLatestStateHeartbeat(
+    input: RefreshLatestMarketStateHeartbeatInput,
+  ): Promise<readonly RefreshedMarketStateHeartbeatRecord[]>;
+  refreshLatestStateHeartbeatForVariants(
+    input: RefreshLatestMarketStateHeartbeatForVariantsInput,
+  ): Promise<readonly RefreshedMarketStateHeartbeatRecord[]>;
 }

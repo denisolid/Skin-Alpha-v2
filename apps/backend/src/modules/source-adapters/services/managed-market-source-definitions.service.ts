@@ -60,10 +60,10 @@ export class ManagedMarketSourceDefinitionsService {
             circuitBreakerFailureThreshold: 4,
             circuitBreakerCooldownSeconds: 180,
             targetQueryMode: 'overlap-first',
-            requestPath: '/api/v1/market/insell/730',
+            requestPath: '/market/insell/730',
             notes: [
-              'Configure BitSkins API credentials and endpoint path in env before enabling.',
-              'BitSkins is treated as a direct primary source when enabled.',
+              'BitSkins uses the aggregate /market/insell/730 snapshot and filters it down to bounded overlap targets after archive.',
+              'The public endpoint currently ignores target query parameters, so only one raw snapshot is fetched per sync.',
             ],
           },
           this.configService.bitskinsApiKey,

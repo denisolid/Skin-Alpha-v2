@@ -1,12 +1,13 @@
 import { Module } from '@nestjs/common';
 
+import { CatalogModule } from '../catalog/catalog.module';
 import { MarketReadModule } from '../market-state/market-read.module';
 import { OpportunityAntiFakeService } from './services/opportunity-anti-fake.service';
 import { OpportunityEngineService } from './services/opportunity-engine.service';
 import { OpportunityEnginePolicyService } from './services/opportunity-engine-policy.service';
 
 @Module({
-  imports: [MarketReadModule],
+  imports: [CatalogModule, MarketReadModule],
   providers: [
     OpportunityAntiFakeService,
     OpportunityEnginePolicyService,

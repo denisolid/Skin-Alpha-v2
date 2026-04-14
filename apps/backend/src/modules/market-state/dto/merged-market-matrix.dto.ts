@@ -25,11 +25,17 @@ export interface MergedMarketVariantIdentityDto {
   readonly marketHashName?: string;
   readonly exterior?: string;
   readonly phaseLabel?: string;
+  readonly phaseFamily: 'vanilla' | 'standard' | 'doppler' | 'gamma-doppler';
+  readonly phaseConfidence: number;
   readonly stattrak: boolean;
   readonly souvenir: boolean;
   readonly isVanilla: boolean;
+  readonly isDoppler: boolean;
+  readonly isGammaDoppler: boolean;
   readonly patternRelevant: boolean;
   readonly floatRelevant: boolean;
+  readonly patternSensitivity: 'none' | 'supported' | 'required';
+  readonly floatSensitivity: 'none' | 'supported' | 'required';
   readonly mappingConfidence: number;
   readonly defIndex?: number;
   readonly paintIndex?: number;

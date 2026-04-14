@@ -77,6 +77,7 @@ export interface DiagnosticsSourceOverviewRecord {
   readonly latestHealthMetric?: DiagnosticsSourceHealthMetricRecord;
   readonly syncStatuses: readonly DiagnosticsSourceSyncStatusRecord[];
   readonly latestJobRun?: DiagnosticsJobRunRecord;
+  readonly latestRawPayloadObservedAt?: Date;
   readonly latestMarketStateObservedAt?: Date;
 }
 
@@ -103,6 +104,21 @@ export interface DiagnosticsSourceEntityCountRecord {
   readonly count: number;
 }
 
+export interface DiagnosticsSourceTimestampRecord {
+  readonly sourceId: string;
+  readonly sourceCode: SourceAdapterKey;
+  readonly sourceName: string;
+  readonly timestamp: Date;
+}
+
+export interface DiagnosticsRawPayloadEndpointRecord {
+  readonly sourceId: string;
+  readonly sourceCode: SourceAdapterKey;
+  readonly sourceName: string;
+  readonly endpointName: string;
+  readonly latestObservedAt: Date;
+}
+
 export interface DiagnosticsOverlapCoverageRecord {
   readonly variantsWithTwoPlusSources: number;
   readonly variantsWithThreePlusSources: number;
@@ -113,7 +129,46 @@ export interface DiagnosticsSourcePairOverlapRecord {
   readonly leftSourceName: string;
   readonly rightSourceCode: SourceAdapterKey;
   readonly rightSourceName: string;
+  readonly canonicalOverlapCount: number;
   readonly pairableVariantCount: number;
+  readonly blockedVariantCount: number;
+  readonly overlapQualityScore: number;
+}
+
+export interface DiagnosticsLatestOpportunityRescanRecord {
+  readonly completedAt: Date;
+  readonly result: Prisma.JsonValue | null;
+}
+
+export interface DiagnosticsCsFloatCoverageRecord {
+  readonly skinportTrackedVariantCount: number;
+  readonly csfloatTrackedVariantCount: number;
+  readonly overlapWithSkinportCount: number;
+  readonly csfloatOverlapEligibleVariantCount: number;
+  readonly csfloatActiveListingCount: number;
+  readonly hotVariantCount: number;
+  readonly csfloatCoveredHotVariantCount: number;
+  readonly csfloatActiveListingsOnHotVariants: number;
+  readonly recentDetailFetchCount: number;
+  readonly recentUsefulDetailFetchCount: number;
+}
+
+export interface DiagnosticsPendingSourceMappingRecord {
+  readonly id: string;
+  readonly sourceId: string;
+  readonly sourceCode: SourceAdapterKey;
+  readonly sourceName: string;
+  readonly endpointName: string;
+  readonly kind: 'LISTING' | 'MARKET_FACT';
+  readonly sourceItemId: string;
+  readonly title?: string | null;
+  readonly normalizedTitle?: string | null;
+  readonly observedAt: Date;
+  readonly normalizedAt: Date;
+  readonly resolvedAt?: Date | null;
+  readonly resolutionNote?: string | null;
+  readonly variantHints?: Record<string, unknown> | null;
+  readonly metadata?: Record<string, unknown> | null;
 }
 
 export interface DiagnosticsRepository {
@@ -136,16 +191,47 @@ export interface DiagnosticsRepository {
   listSourceListingCounts(): Promise<
     readonly DiagnosticsSourceEntityCountRecord[]
   >;
+  listRawPayloadArchiveCounts(): Promise<
+    readonly DiagnosticsSourceEntityCountRecord[]
+  >;
+  listSourceMarketFactCounts(): Promise<
+    readonly DiagnosticsSourceEntityCountRecord[]
+  >;
   listMarketSnapshotCounts(): Promise<
     readonly DiagnosticsSourceEntityCountRecord[]
   >;
   listMarketStateCounts(): Promise<
     readonly DiagnosticsSourceEntityCountRecord[]
   >;
+  listPendingSourceMappingCounts(query?: {
+    readonly source?: SourceAdapterKey;
+    readonly unresolvedOnly?: boolean;
+  }): Promise<readonly DiagnosticsSourceEntityCountRecord[]>;
+  listUsefulRawPayloadCounts(): Promise<
+    readonly DiagnosticsSourceEntityCountRecord[]
+  >;
+  listRecentRawPayloadArchiveCounts(limitPerSource: number): Promise<
+    readonly DiagnosticsSourceEntityCountRecord[]
+  >;
+  listRecentUsefulRawPayloadCounts(limitPerSource: number): Promise<
+    readonly DiagnosticsSourceEntityCountRecord[]
+  >;
+  listProjectionSkipCounts(): Promise<readonly DiagnosticsSourceEntityCountRecord[]>;
+  listLatestNormalizedAtBySource(): Promise<
+    readonly DiagnosticsSourceTimestampRecord[]
+  >;
+  listLatestRawPayloadObservedAtByEndpoint(): Promise<
+    readonly DiagnosticsRawPayloadEndpointRecord[]
+  >;
   getOverlapCoverage(): Promise<DiagnosticsOverlapCoverageRecord>;
   listPairableVariantCountsBySourcePair(): Promise<
     readonly DiagnosticsSourcePairOverlapRecord[]
   >;
+  findLatestOpportunityRescanRecord(): Promise<DiagnosticsLatestOpportunityRescanRecord | null>;
+  getCsFloatCoverageMetrics(input: {
+    readonly hotVariantIds: readonly string[];
+    readonly recentDetailFetchLimit: number;
+  }): Promise<DiagnosticsCsFloatCoverageRecord>;
   listRecentHealthMetrics(query: {
     readonly source?: SourceAdapterKey;
     readonly since?: Date;
@@ -165,4 +251,10 @@ export interface DiagnosticsRepository {
     readonly limit: number;
     readonly statuses?: readonly SyncStatus[];
   }): Promise<readonly DiagnosticsSourceSyncStatusRecord[]>;
+  listRecentPendingSourceMappings(query: {
+    readonly source?: SourceAdapterKey;
+    readonly since?: Date;
+    readonly unresolvedOnly?: boolean;
+    readonly limit: number;
+  }): Promise<readonly DiagnosticsPendingSourceMappingRecord[]>;
 }

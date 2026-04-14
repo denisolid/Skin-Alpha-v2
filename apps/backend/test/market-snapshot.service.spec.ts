@@ -1,119 +1,77 @@
-import { SourceKind } from '@prisma/client';
+import { Prisma, SourceKind } from '@prisma/client';
 
-import type { MarketFreshnessPolicyService } from '../src/modules/market-state/services/market-freshness-policy.service';
-import { MarketSnapshotService } from '../src/modules/market-state/services/market-snapshot.service';
 import type {
+  MarketReadRepository,
   MarketSnapshotRecord,
-  MarketStateRepository,
   MarketStateSourceRecord,
-} from '../src/modules/market-state/domain/market-state.repository';
-
-function createSourceState(): MarketStateSourceRecord {
-  return {
-    sourceId: 'source-1',
-    sourceCode: 'steam-snapshot',
-    sourceName: 'Steam Snapshot',
-    sourceKind: SourceKind.OFFICIAL,
-    sourceMetadata: null,
-    latestSnapshotId: 'snapshot-current',
-    currencyCode: 'USD',
-    lowestAskGross: null,
-    highestBidGross: null,
-    listingCount: null,
-    observedAt: new Date('2026-04-05T12:00:00.000Z'),
-    lastSyncedAt: new Date('2026-04-05T12:00:00.000Z'),
-    confidence: null,
-    latestSnapshot: null,
-  };
-}
-
-function createSnapshotRecord(
-  snapshotId: string,
-  overrides: Partial<MarketSnapshotRecord> = {},
-): MarketSnapshotRecord {
-  return {
-    snapshotId,
-    sourceId: 'source-1',
-    sourceCode: 'steam-snapshot',
-    sourceName: 'Steam Snapshot',
-    sourceKind: SourceKind.OFFICIAL,
-    sourceMetadata: null,
-    currencyCode: 'USD',
-    lowestAskGross: null,
-    highestBidGross: null,
-    listingCount: null,
-    observedAt: new Date('2026-04-05T10:00:00.000Z'),
-    confidence: null,
-    rawPayloadArchiveId: null,
-    ...overrides,
-  };
-}
+} from '../src/modules/market-state/domain/market-read.repository';
+import { MarketSnapshotService } from '../src/modules/market-state/services/market-snapshot.service';
 
 describe('MarketSnapshotService', () => {
-  function createService(
-    evaluateUsable: (snapshot: MarketSnapshotRecord) => boolean,
-  ): MarketSnapshotService {
-    const repository = {} as MarketStateRepository;
-    const marketFreshnessPolicyService = {
-      evaluateSourceState: jest.fn((snapshot: MarketSnapshotRecord) => ({
-        state: evaluateUsable(snapshot) ? 'fresh' : 'expired',
-        lagMs: 0,
-        staleAfterMs: 60_000,
-        maxStaleMs: 120_000,
-        usable: evaluateUsable(snapshot),
-      })),
-    } as unknown as MarketFreshnessPolicyService;
-
-    return new MarketSnapshotService(repository, marketFreshnessPolicyService);
-  }
-
-  it('selects the first usable historical snapshot with a market signal', () => {
-    const service = createService(
-      (snapshot) => snapshot.snapshotId === 'snapshot-usable',
+  it('ignores zero-quantity history entries when selecting fallback snapshots', () => {
+    const freshnessService = {
+      evaluateSourceState: jest.fn().mockReturnValue({
+        state: 'fresh',
+        lagMs: 60_000,
+        staleAfterMs: 600_000,
+        maxStaleMs: 7_200_000,
+        usable: true,
+      }),
+    };
+    const repository: MarketReadRepository = {
+      findVariantRecord: jest.fn(),
+      findVariantRecords: jest.fn(),
+      findVariantRecordsByCanonicalItem: jest.fn(),
+      findVariantSnapshotHistory: jest.fn(),
+      findVariantSnapshotHistories: jest.fn(),
+    };
+    const service = new MarketSnapshotService(
+      repository,
+      freshnessService as never,
     );
-    const sourceState = createSourceState();
-    const snapshotHistory = [
-      createSnapshotRecord('snapshot-current', {
-        lowestAskGross: {
-          toString: () => '120.00',
-        },
-      }),
-      createSnapshotRecord('snapshot-empty'),
-      createSnapshotRecord('snapshot-usable', {
-        lowestAskGross: {
-          toString: () => '118.50',
-        },
-        listingCount: 3,
-      }),
-    ];
+    const sourceState: MarketStateSourceRecord = {
+      sourceId: 'source-1',
+      sourceCode: 'csfloat',
+      sourceName: 'CSFloat',
+      sourceKind: SourceKind.MARKETPLACE,
+      sourceMetadata: null,
+      representativeListing: null,
+      latestSnapshotId: 'latest-empty',
+      currencyCode: 'USD',
+      observedAt: new Date('2026-04-11T14:00:00.000Z'),
+      lastSyncedAt: new Date('2026-04-11T14:00:00.000Z'),
+      latestSnapshot: null,
+    };
+    const zeroQuantitySnapshot: MarketSnapshotRecord = {
+      snapshotId: 'older-empty',
+      sourceId: 'source-1',
+      sourceCode: 'csfloat',
+      sourceName: 'CSFloat',
+      sourceKind: SourceKind.MARKETPLACE,
+      sourceMetadata: null,
+      currencyCode: 'USD',
+      listingCount: 0,
+      observedAt: new Date('2026-04-11T13:30:00.000Z'),
+    };
+    const usableSnapshot: MarketSnapshotRecord = {
+      snapshotId: 'older-ask',
+      sourceId: 'source-1',
+      sourceCode: 'csfloat',
+      sourceName: 'CSFloat',
+      sourceKind: SourceKind.MARKETPLACE,
+      sourceMetadata: null,
+      currencyCode: 'USD',
+      lowestAskGross: new Prisma.Decimal('153.12'),
+      listingCount: 12,
+      observedAt: new Date('2026-04-11T13:00:00.000Z'),
+    };
 
     const fallback = service.selectHistoricalFallback(
       sourceState,
-      snapshotHistory,
-      new Date('2026-04-05T12:00:00.000Z'),
+      [zeroQuantitySnapshot, usableSnapshot],
+      new Date('2026-04-11T14:05:00.000Z'),
     );
 
-    expect(fallback?.snapshot.snapshotId).toBe('snapshot-usable');
-  });
-
-  it('returns null when no usable historical snapshot exists', () => {
-    const service = createService(() => false);
-    const sourceState = createSourceState();
-    const snapshotHistory = [
-      createSnapshotRecord('snapshot-current', {
-        lowestAskGross: {
-          toString: () => '120.00',
-        },
-      }),
-      createSnapshotRecord('snapshot-without-signal'),
-    ];
-
-    const fallback = service.selectHistoricalFallback(
-      sourceState,
-      snapshotHistory,
-      new Date('2026-04-05T12:00:00.000Z'),
-    );
-
-    expect(fallback).toBeNull();
+    expect(fallback?.snapshot.snapshotId).toBe('older-ask');
   });
 });

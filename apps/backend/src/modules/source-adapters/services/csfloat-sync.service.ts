@@ -25,15 +25,19 @@ import type {
   CsFloatSyncJobData,
 } from '../dto/csfloat-sync.job.dto';
 import { RawPayloadArchiveService } from './raw-payload-archive.service';
+import { PendingSourceMappingService } from './pending-source-mapping.service';
+import { SourceFetchJobService } from './source-fetch-job.service';
+import { SourceFreshnessService } from './source-freshness.service';
 import { SourceListingStorageService } from './source-listing-storage.service';
 import { SourceOperationsService } from './source-operations.service';
+import { SourcePayloadNormalizationService } from './source-payload-normalization.service';
+import { SourceProvenanceService } from './source-provenance.service';
 import { CsFloatDetailPolicyService } from './csfloat-detail-policy.service';
 import {
   CsFloatHttpClientService,
   CsFloatHttpError,
 } from './csfloat-http-client.service';
 import { CsFloatMarketStateService } from './csfloat-market-state.service';
-import { CsFloatPayloadNormalizerService } from './csfloat-payload-normalizer.service';
 import { CsFloatRateLimitService } from './csfloat-rate-limit.service';
 
 @Injectable()
@@ -43,18 +47,26 @@ export class CsFloatSyncService {
     private readonly configService: AppConfigService,
     @Inject(RawPayloadArchiveService)
     private readonly rawPayloadArchiveService: RawPayloadArchiveService,
+    @Inject(PendingSourceMappingService)
+    private readonly pendingSourceMappingService: PendingSourceMappingService,
+    @Inject(SourceFetchJobService)
+    private readonly sourceFetchJobService: SourceFetchJobService,
+    @Inject(SourceFreshnessService)
+    private readonly sourceFreshnessService: SourceFreshnessService,
     @Inject(SourceListingStorageService)
     private readonly sourceListingStorageService: SourceListingStorageService,
     @Inject(SourceOperationsService)
     private readonly sourceOperationsService: SourceOperationsService,
+    @Inject(SourcePayloadNormalizationService)
+    private readonly sourcePayloadNormalizationService: SourcePayloadNormalizationService,
+    @Inject(SourceProvenanceService)
+    private readonly sourceProvenanceService: SourceProvenanceService,
     @Inject(CsFloatDetailPolicyService)
     private readonly csfloatDetailPolicyService: CsFloatDetailPolicyService,
     @Inject(CsFloatHttpClientService)
     private readonly csfloatHttpClientService: CsFloatHttpClientService,
     @Inject(CsFloatMarketStateService)
     private readonly csfloatMarketStateService: CsFloatMarketStateService,
-    @Inject(CsFloatPayloadNormalizerService)
-    private readonly csfloatPayloadNormalizerService: CsFloatPayloadNormalizerService,
     @Inject(CsFloatRateLimitService)
     private readonly csfloatRateLimitService: CsFloatRateLimitService,
     @Inject(CSFLOAT_FETCH_LISTING_DETAIL_QUEUE)
@@ -118,9 +130,12 @@ export class CsFloatSyncService {
         0,
         input.detailBudget ?? this.configService.csfloatDetailJobBudget,
       );
-      const normalizedTitles = input.filters?.marketHashName
-        ? [input.filters.marketHashName]
-        : [];
+      const normalizedTitleSet = new Set<string>();
+
+      if (input.filters?.marketHashName) {
+        normalizedTitleSet.add(this.normalizeTitle(input.filters.marketHashName));
+      }
+
       const sourceListingIds: string[] = [];
       let detailsEnqueued = 0;
       let pagesFetched = 0;
@@ -171,11 +186,31 @@ export class CsFloatSyncService {
           httpStatus: 200,
         });
         const normalizedPayload =
-          await this.csfloatPayloadNormalizerService.normalize(archive);
+          await this.sourcePayloadNormalizationService.normalizeArchivedPayload({
+            rawPayloadArchiveId: archive.id,
+            source: 'csfloat',
+          });
         const listingStorageResult =
           await this.sourceListingStorageService.storeNormalizedListings(
             normalizedPayload,
           );
+        const pendingMappings =
+          await this.pendingSourceMappingService.captureFromPayload(
+            normalizedPayload,
+          );
+
+        await Promise.all([
+          this.sourceProvenanceService.recordListings(
+            normalizedPayload,
+            listingStorageResult,
+          ),
+          this.sourceFreshnessService.recordNormalizedPayload(normalizedPayload),
+          this.sourceFetchJobService.recordNormalization(
+            normalizedPayload.fetchJobId,
+            listingStorageResult.storedCount,
+            normalizedPayload.warnings.length + pendingMappings,
+          ),
+        ]);
 
         sourceListingIds.push(...listingStorageResult.sourceListingIds);
         detailsEnqueued += await this.enqueueDetailFetches(
@@ -183,6 +218,9 @@ export class CsFloatSyncService {
           detailBudget - detailsEnqueued,
         );
         pagesFetched += 1;
+        for (const listing of response.listings) {
+          normalizedTitleSet.add(this.normalizeTitle(listing.item.marketHashName));
+        }
         nextCursor = response.pagination.nextCursor;
 
         await this.sourceOperationsService.recordHealthMetric({
@@ -207,15 +245,16 @@ export class CsFloatSyncService {
         cursor = nextCursor;
       }
 
+      const partialResult = truncatedByBudget || Boolean(nextCursor);
+      const normalizedTitles = [...normalizedTitleSet];
       const rebuildResult =
         await this.csfloatMarketStateService.reconcileAndRebuild({
           syncStartedAt: startedAt,
           observedAt: new Date(),
           sourceListingIds,
-          fullSnapshot: !input.filters,
+          fullSnapshot: !input.filters && !partialResult,
           ...(normalizedTitles.length > 0 ? { normalizedTitles } : {}),
         });
-      const partialResult = truncatedByBudget || Boolean(nextCursor);
       const details = {
         pagesFetched,
         detailsEnqueued,
@@ -339,11 +378,40 @@ export class CsFloatSyncService {
         httpStatus: 200,
       });
       const normalizedPayload =
-        await this.csfloatPayloadNormalizerService.normalize(archive);
+        await this.sourcePayloadNormalizationService.normalizeArchivedPayload({
+          rawPayloadArchiveId: archive.id,
+          source: 'csfloat',
+        });
+      const listingStorageResult =
+        await this.sourceListingStorageService.storeNormalizedListings(
+          normalizedPayload,
+        );
+      const pendingMappings =
+        await this.pendingSourceMappingService.captureFromPayload(
+          normalizedPayload,
+        );
 
-      await this.sourceListingStorageService.storeNormalizedListings(
-        normalizedPayload,
-      );
+      await Promise.all([
+        this.sourceProvenanceService.recordListings(
+          normalizedPayload,
+          listingStorageResult,
+        ),
+        this.sourceFreshnessService.recordNormalizedPayload(normalizedPayload),
+        this.sourceFetchJobService.recordNormalization(
+          normalizedPayload.fetchJobId,
+          listingStorageResult.storedCount,
+          normalizedPayload.warnings.length + pendingMappings,
+        ),
+      ]);
+      await this.csfloatMarketStateService.reconcileAndRebuild({
+        syncStartedAt: observedAt,
+        observedAt,
+        sourceListingIds: listingStorageResult.sourceListingIds,
+        fullSnapshot: false,
+        normalizedTitles: normalizedPayload.listings.map(
+          (listing) => listing.title,
+        ),
+      });
       await this.sourceOperationsService.completeJobRun({
         jobRunId,
         result: {
@@ -461,5 +529,9 @@ export class CsFloatSyncService {
     }
 
     return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+  }
+
+  private normalizeTitle(title: string): string {
+    return title.trim().replace(/\s+/g, ' ');
   }
 }

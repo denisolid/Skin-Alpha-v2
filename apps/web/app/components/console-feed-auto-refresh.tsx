@@ -4,6 +4,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useRef, useTransition } from 'react';
 
 const FEED_REFRESH_INTERVAL_MS = 15_000;
+const FEED_AUTO_REFRESH_ENABLED = false;
 
 function isFeedRoute(pathname: string): boolean {
   return (
@@ -24,7 +25,7 @@ export function ConsoleFeedAutoRefresh() {
   }, [isPending]);
 
   useEffect(() => {
-    if (!isFeedRoute(pathname)) {
+    if (!FEED_AUTO_REFRESH_ENABLED || !isFeedRoute(pathname)) {
       return;
     }
 

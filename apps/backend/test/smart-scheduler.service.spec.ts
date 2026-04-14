@@ -113,8 +113,25 @@ describe('SmartSchedulerService', () => {
     const sourceOperationsService = {
       hasActiveSyncJob: jest.fn().mockResolvedValue(false),
     };
+    const sourceScheduler = {
+      decide: jest.fn().mockResolvedValue({
+        shouldRun: true,
+      }),
+    };
     const sourceSyncDispatchService = {
       dispatchScheduledSync: jest.fn(),
+    };
+    const sourceHealthRecoveryService = {
+      assessAndApply: jest.fn().mockResolvedValue({
+        source: 'csfloat',
+        mode: 'active',
+        checkedAt: now,
+      }),
+    };
+    const sourceAntiBanSchedulerService = {
+      resolveInterval: jest.fn(({ baseIntervalMs }: { baseIntervalMs: number }) =>
+        baseIntervalMs,
+      ),
     };
     const jobRunService = {
       hasActiveJob: jest.fn(),
@@ -127,6 +144,12 @@ describe('SmartSchedulerService', () => {
     const schedulerLockService = {
       acquire: jest.fn().mockResolvedValue(true),
     };
+    const readPathDegradationService = {
+      inspect: jest.fn().mockResolvedValue({
+        held: false,
+      }),
+      trip: jest.fn().mockResolvedValue(undefined),
+    };
     const scannerUniverseService = {
       getScannerUniverse: jest.fn(),
     };
@@ -136,11 +159,15 @@ describe('SmartSchedulerService', () => {
       baseConfig as never,
       prismaService as never,
       adapters,
+      sourceScheduler as never,
       sourceOperationsService as never,
+      sourceHealthRecoveryService as never,
+      sourceAntiBanSchedulerService as never,
       sourceSyncDispatchService as never,
       jobRunService as never,
       jobsMaintenanceDispatchService as never,
       schedulerLockService as never,
+      readPathDegradationService as never,
       scannerUniverseService as never,
     );
 
@@ -179,8 +206,25 @@ describe('SmartSchedulerService', () => {
     const sourceOperationsService = {
       hasActiveSyncJob: jest.fn().mockResolvedValue(false),
     };
+    const sourceScheduler = {
+      decide: jest.fn().mockResolvedValue({
+        shouldRun: true,
+      }),
+    };
     const sourceSyncDispatchService = {
       dispatchScheduledSync: jest.fn(),
+    };
+    const sourceHealthRecoveryService = {
+      assessAndApply: jest.fn().mockResolvedValue({
+        source: 'csfloat',
+        mode: 'active',
+        checkedAt: new Date(),
+      }),
+    };
+    const sourceAntiBanSchedulerService = {
+      resolveInterval: jest.fn(({ baseIntervalMs }: { baseIntervalMs: number }) =>
+        baseIntervalMs,
+      ),
     };
     const jobRunService = {
       hasActiveJob: jest.fn().mockResolvedValue(false),
@@ -202,6 +246,12 @@ describe('SmartSchedulerService', () => {
     };
     const schedulerLockService = {
       acquire: jest.fn().mockResolvedValue(true),
+    };
+    const readPathDegradationService = {
+      inspect: jest.fn().mockResolvedValue({
+        held: false,
+      }),
+      trip: jest.fn().mockResolvedValue(undefined),
     };
     const scannerUniverseService = {
       getScannerUniverse: jest.fn().mockResolvedValue({
@@ -225,11 +275,15 @@ describe('SmartSchedulerService', () => {
       config as never,
       prismaService as never,
       adapters,
+      sourceScheduler as never,
       sourceOperationsService as never,
+      sourceHealthRecoveryService as never,
+      sourceAntiBanSchedulerService as never,
       sourceSyncDispatchService as never,
       jobRunService as never,
       jobsMaintenanceDispatchService as never,
       schedulerLockService as never,
+      readPathDegradationService as never,
       scannerUniverseService as never,
     );
 

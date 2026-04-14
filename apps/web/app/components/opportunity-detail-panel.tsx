@@ -3,7 +3,7 @@ import Link from 'next/link';
 import {
   formatCurrency,
   formatDateTime,
-  formatPercent,
+  formatTokenLabel,
   formatScore,
   getConfidenceTone,
   getFetchModeLabel,
@@ -55,6 +55,11 @@ export function OpportunityDetailPanel({
   const [buySource, sellSource] = getSourcePairLabel(item.sourcePairKey);
   const buyMarketUrl = resolveMarketActionUrl(item.buy);
   const sellMarketUrl = resolveMarketActionUrl(item.sell);
+  const executionPenaltyTotal =
+    item.execution.fees +
+    item.execution.slippagePenalty +
+    item.execution.liquidityPenalty +
+    item.execution.uncertaintyPenalty;
 
   return (
     <section className="panel card detail-layout">
@@ -64,6 +69,9 @@ export function OpportunityDetailPanel({
           <div className="badge-row">
             <span className={`badge ${getRiskTone(item.riskClass)}`}>
               {item.riskClass}
+            </span>
+            <span className="badge source-pill">
+              {formatTokenLabel(item.surfaceTier)}
             </span>
             <span
               className={`badge ${getConfidenceTone(item.finalConfidence)}`}
@@ -84,6 +92,16 @@ export function OpportunityDetailPanel({
           <span>{buySource}</span>
           <span>{sellSource}</span>
         </div>
+        <p className="meta-text">
+          Parser flow: source adapters ingest raw payloads, normalize them into
+          market state, then the opportunity engine filters and ranks tradable
+          pairs for this feed.
+        </p>
+        {item.blockerReason ? (
+          <p className="meta-text">
+            Current blocker: {formatTokenLabel(item.blockerReason)}.
+          </p>
+        ) : null}
       </div>
 
       <div className="detail-metric-grid">
@@ -92,14 +110,14 @@ export function OpportunityDetailPanel({
           <strong>{formatCurrency(item.expectedNetProfit)}</strong>
         </div>
         <div className="metric-card">
-          <span className="metric-label">Fees-Adjusted Spread</span>
-          <strong>{formatCurrency(item.feesAdjustedSpread)}</strong>
+          <span className="metric-label">Execution Penalties</span>
+          <strong>{formatCurrency(executionPenaltyTotal)}</strong>
         </div>
         <div className="metric-card">
           <span className="metric-label">Raw Spread</span>
           <strong>
-            {formatCurrency(item.rawSpread)} /{' '}
-            {formatPercent(item.rawSpreadPercent)}
+            {formatCurrency(item.rawSpread)} / {item.rawSpreadPercent.toFixed(1)}
+            %
           </strong>
         </div>
         <div className="metric-card">
@@ -113,20 +131,62 @@ export function OpportunityDetailPanel({
         <OpportunityLegCard label="Sell leg" leg={item.sell} />
       </div>
 
-      {item.penalties ? (
+      <div className="detail-card">
+        <strong>Execution Breakdown</strong>
+        <p className="meta-text">
+          Realized sell {formatCurrency(item.execution.realizedSellPrice)} /
+          Buy {formatCurrency(item.execution.buyPrice)} / Fees{' '}
+          {formatCurrency(item.execution.fees)}
+        </p>
+        <p className="meta-text">
+          Slippage {formatCurrency(item.execution.slippagePenalty)} / Liquidity{' '}
+          {formatCurrency(item.execution.liquidityPenalty)} / Uncertainty{' '}
+          {formatCurrency(item.execution.uncertaintyPenalty)}
+        </p>
+      </div>
+
+      <div className="detail-card">
+        <strong>Quality Signals</strong>
+        <p className="meta-text">
+          Mapping {formatScore(item.componentScores.mappingConfidence)} / Price{' '}
+          {formatScore(item.componentScores.priceConfidence)} / Liquidity{' '}
+          {formatScore(item.componentScores.liquidityConfidence)}
+        </p>
+        <p className="meta-text">
+          Freshness {formatScore(item.componentScores.freshnessConfidence)} /
+          Source reliability{' '}
+          {formatScore(item.componentScores.sourceReliabilityConfidence)} /
+          Variant match{' '}
+          {formatScore(item.componentScores.variantMatchConfidence)}
+        </p>
+      </div>
+
+      <div className="detail-card">
+        <strong>Tradability Gate</strong>
+        <p className="meta-text">
+          Strict match {item.strictTradable.matched ? 'passed' : 'failed'} /
+          pre-score gate {item.preScoreGate.passed ? 'passed' : 'failed'} /
+          pairability {formatTokenLabel(item.pairability.status)}
+        </p>
+        <p className="meta-text">
+          Eligibility {item.eligibility.eligible ? 'eligible' : 'blocked'} /
+          reference support{' '}
+          {item.eligibility.requiresReferenceSupport ? 'required' : 'not required'}
+          {' / '}
+          steam demoted{' '}
+          {item.eligibility.steamSnapshotDemoted ? 'yes' : 'no'}
+        </p>
+      </div>
+
+      {item.riskReasons.length > 0 ? (
         <div className="detail-card">
-          <strong>Penalty Breakdown</strong>
-          <p className="meta-text">
-            Freshness {formatPercent(item.penalties.freshnessPenalty)} /
-            Liquidity {formatPercent(item.penalties.liquidityPenalty)} / Stale{' '}
-            {formatPercent(item.penalties.stalePenalty)}
-          </p>
-          <p className="meta-text">
-            Category {formatPercent(item.penalties.categoryPenalty)} /
-            Disagreement{' '}
-            {formatPercent(item.penalties.sourceDisagreementPenalty)} / Total{' '}
-            {formatPercent(item.penalties.totalPenalty)}
-          </p>
+          <strong>Risk Reasons</strong>
+          {item.riskReasons.map((reason) => (
+            <p key={`${reason.code}:${reason.detail}`} className="meta-text">
+              {formatTokenLabel(reason.severity)}: {formatTokenLabel(reason.code)}{' '}
+              / {reason.detail}
+            </p>
+          ))}
         </div>
       ) : null}
 
@@ -184,9 +244,7 @@ export function OpportunityDetailPanel({
         ) : null}
         <Link
           className="button-ghost"
-          href={`/opportunities/${item.itemVariantId}?sourcePair=${encodeURIComponent(
-            item.sourcePairKey,
-          )}`}
+          href={`/opportunities/${encodeURIComponent(item.opportunityKey)}`}
         >
           Open Full Detail
         </Link>

@@ -189,6 +189,14 @@ export class MarketFreshnessPolicyService {
       };
     }
 
+    if (source.sourceCode === 'waxpeer') {
+      return {
+        staleAfterMs: 12 * 60 * 1000,
+        maxStaleMs: 4 * 60 * 60 * 1000,
+        baseFetchMode: 'live',
+      };
+    }
+
     if (source.sourceCode === 'youpin') {
       return {
         staleAfterMs: 18 * 60 * 1000,

@@ -10,6 +10,7 @@ import type {
   SourceCategory,
   SourceSyncMode,
 } from '../domain/source-adapter.types';
+import { SourceOperationalProfileService } from './source-operational-profile.service';
 
 interface ResolvedSourceRecord {
   readonly id: string;
@@ -29,16 +30,43 @@ interface SourceRecordDefinition {
 
 @Injectable()
 export class SourceRecordService {
+  private readonly resolvedSources = new Map<
+    SourceAdapterKey,
+    Promise<ResolvedSourceRecord>
+  >();
+
   constructor(
     @Inject(PrismaService)
     private readonly prismaService: PrismaService,
     @Inject(AppConfigService)
     private readonly configService: AppConfigService,
+    @Inject(SourceOperationalProfileService)
+    private readonly sourceOperationalProfileService: SourceOperationalProfileService,
   ) {}
 
   async resolveByKey(source: SourceAdapterKey): Promise<ResolvedSourceRecord> {
+    const cachedResolution = this.resolvedSources.get(source);
+
+    if (cachedResolution) {
+      return cachedResolution;
+    }
+
+    const resolutionPromise = this.loadResolvedSource(source);
+    this.resolvedSources.set(source, resolutionPromise);
+
+    try {
+      return await resolutionPromise;
+    } catch (error) {
+      this.resolvedSources.delete(source);
+      throw error;
+    }
+  }
+
+  private async loadResolvedSource(
+    source: SourceAdapterKey,
+  ): Promise<ResolvedSourceRecord> {
     const definition = this.getDefinition(source);
-    const metadata = this.buildMetadata(definition);
+    const metadata = this.buildMetadata(source, definition);
     const persistedSource = await this.prismaService.source.upsert({
       where: {
         code: source,
@@ -67,6 +95,7 @@ export class SourceRecordService {
   }
 
   private buildMetadata(
+    source: SourceAdapterKey,
     definition: SourceRecordDefinition,
   ): Prisma.InputJsonObject {
     return {
@@ -85,6 +114,7 @@ export class SourceRecordService {
       ...(definition.behavior.canDrivePrimaryTruth
         ? {}
         : { role: 'reference-only' }),
+      ...this.sourceOperationalProfileService.toMetadataFragment(source),
       ...(definition.metadata ?? {}),
     };
   }
@@ -127,6 +157,46 @@ export class SourceRecordService {
           isEnabled: true,
           baseUrl: this.configService.csfloatApiBaseUrl,
         };
+      case 'dmarket':
+        return {
+          name: 'DMarket',
+          category: 'marketplace',
+          supportedSyncModes: ['incremental', 'market-state-only'],
+          classification: 'PRIMARY',
+          behavior: {
+            canDrivePrimaryTruth: true,
+            canProvideFallbackPricing: true,
+            canProvideQuantitySignals: true,
+            canBeUsedForPairBuilding: true,
+            canBeUsedForConfirmationOnly: true,
+          },
+          isEnabled: this.configService.isDMarketEnabled(),
+          baseUrl: this.configService.dmarketApiBaseUrl,
+          metadata: {
+            featureFlag: 'ENABLE_DMARKET',
+            signing: 'ed25519',
+          },
+        };
+      case 'waxpeer':
+        return {
+          name: 'Waxpeer',
+          category: 'marketplace',
+          supportedSyncModes: ['incremental', 'market-state-only'],
+          classification: 'PRIMARY',
+          behavior: {
+            canDrivePrimaryTruth: true,
+            canProvideFallbackPricing: true,
+            canProvideQuantitySignals: true,
+            canBeUsedForPairBuilding: true,
+            canBeUsedForConfirmationOnly: true,
+          },
+          isEnabled: this.configService.isWaxpeerEnabled(),
+          baseUrl: this.configService.waxpeerApiBaseUrl,
+          metadata: {
+            featureFlag: 'ENABLE_WAXPEER',
+            integration: 'official-public-mass-info',
+          },
+        };
       case 'bitskins':
         return {
           name: 'BitSkins',
@@ -142,6 +212,11 @@ export class SourceRecordService {
           },
           isEnabled: this.configService.isBitSkinsEnabled(),
           baseUrl: this.configService.bitskinsApiBaseUrl,
+          metadata: {
+            featureFlag: 'ENABLE_BITSKINS',
+            integration: 'aggregate-market-insell',
+            ingestionMode: 'bounded-target-filtered-full-snapshot',
+          },
         };
       case 'youpin':
         return {

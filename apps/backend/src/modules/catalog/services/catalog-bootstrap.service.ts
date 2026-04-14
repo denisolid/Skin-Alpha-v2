@@ -1,12 +1,16 @@
 import { Inject, Injectable } from '@nestjs/common';
 
 import { AppLoggerService } from '../../../infrastructure/logging/app-logger.service';
-import { PrismaService } from '../../../infrastructure/prisma/prisma.service';
 import {
   CATALOG_REPOSITORY,
   type CatalogRepository,
 } from '../domain/catalog.repository';
-import type { CatalogBootstrapResultDto } from '../dto/catalog-bootstrap-result.dto';
+import type {
+  CatalogBootstrapResultDto,
+  CatalogBootstrapSeedResultDto,
+  CatalogBootstrapStatus,
+  CatalogBootstrapSummaryDto,
+} from '../dto/catalog-bootstrap-result.dto';
 import type { CatalogSourceListingInputDto } from '../dto/catalog-source-listing-input.dto';
 import { CatalogMappingService } from './catalog-mapping.service';
 
@@ -14,6 +18,9 @@ const CONTROLLED_CS2_UNIVERSE = 'controlled-cs2-v1';
 const CATALOG_BOOTSTRAP_SOURCE = 'catalog-bootstrap';
 const CATALOG_BOOTSTRAP_MAPPING_SOURCE: CatalogSourceListingInputDto['source'] =
   'skinport';
+type MutableCatalogBootstrapSummary = {
+  -readonly [K in keyof CatalogBootstrapSummaryDto]: CatalogBootstrapSummaryDto[K];
+};
 
 const CONTROLLED_CS2_UNIVERSE_SEEDS: readonly Omit<
   CatalogSourceListingInputDto,
@@ -111,8 +118,6 @@ const CONTROLLED_CS2_UNIVERSE_SEEDS: readonly Omit<
 @Injectable()
 export class CatalogBootstrapService {
   constructor(
-    @Inject(PrismaService)
-    private readonly prismaService: PrismaService,
     @Inject(AppLoggerService)
     private readonly logger: AppLoggerService,
     @Inject(CATALOG_REPOSITORY)
@@ -127,74 +132,159 @@ export class CatalogBootstrapService {
       CatalogBootstrapService.name,
     );
 
-    let canonicalItemsCreated = 0;
-    let itemVariantsCreated = 0;
+    const seedItems = this.createSummary();
+    const canonicalItems = this.createSummary();
+    const itemVariants = this.createSummary();
     const warnings: string[] = [];
+    const results: CatalogBootstrapSeedResultDto[] = [];
 
     for (const seed of CONTROLLED_CS2_UNIVERSE_SEEDS) {
       const mapping = this.catalogMappingService.mapSourceListing({
         source: CATALOG_BOOTSTRAP_MAPPING_SOURCE,
         ...seed,
       });
+      const seedWarnings =
+        mapping.warnings.length > 0
+          ? [`${seed.marketHashName}: ${mapping.warnings.join('; ')}`]
+          : [];
+
+      warnings.push(...seedWarnings);
 
       if (mapping.confidence < 0.75) {
-        throw new Error(
-          `Catalog bootstrap seed "${seed.marketHashName}" resolved below the safety threshold (${mapping.confidence}).`,
-        );
-      }
+        const failureReason = `Resolved below safety threshold (${mapping.confidence}).`;
+        warnings.push(`${seed.marketHashName}: ${failureReason}`);
 
-      const existingCanonicalItem =
-        await this.prismaService.canonicalItem.findUnique({
-          where: {
-            slug: mapping.canonicalSlug,
+        this.incrementSummary(seedItems, 'skipped');
+        this.incrementSummary(canonicalItems, 'skipped');
+        this.incrementSummary(itemVariants, 'skipped');
+        results.push({
+          marketHashName: seed.marketHashName,
+          canonicalSlug: mapping.canonicalSlug,
+          variantKey: mapping.variantKey,
+          status: 'skipped',
+          canonicalItem: {
+            status: 'skipped',
           },
-          select: {
-            id: true,
+          itemVariant: {
+            status: 'skipped',
           },
+          warnings: seedWarnings,
+          failureReason,
         });
-      const existingItemVariant = existingCanonicalItem
-        ? await this.prismaService.itemVariant.findUnique({
-            where: {
-              canonicalItemId_variantKey: {
-                canonicalItemId: existingCanonicalItem.id,
-                variantKey: mapping.variantKey,
-              },
-            },
-            select: {
-              id: true,
-            },
-          })
-        : null;
-
-      await this.catalogRepository.upsertResolvedMapping({
-        source: CATALOG_BOOTSTRAP_SOURCE,
-        mapping,
-      });
-
-      if (!existingCanonicalItem) {
-        canonicalItemsCreated += 1;
+        continue;
       }
 
-      if (!existingItemVariant) {
-        itemVariantsCreated += 1;
-      }
+      try {
+        const persistedMapping = await this.catalogRepository.upsertResolvedMapping(
+          {
+            source: CATALOG_BOOTSTRAP_SOURCE,
+            mapping,
+          },
+        );
+        const seedStatus = this.resolveSeedStatus(
+          persistedMapping.canonicalItemAction,
+          persistedMapping.itemVariantAction,
+        );
 
-      if (mapping.warnings.length > 0) {
-        warnings.push(`${seed.marketHashName}: ${mapping.warnings.join('; ')}`);
+        this.incrementSummary(seedItems, seedStatus);
+        this.incrementSummary(
+          canonicalItems,
+          persistedMapping.canonicalItemAction,
+        );
+        this.incrementSummary(itemVariants, persistedMapping.itemVariantAction);
+        results.push({
+          marketHashName: seed.marketHashName,
+          canonicalSlug: mapping.canonicalSlug,
+          variantKey: mapping.variantKey,
+          status: seedStatus,
+          canonicalItem: {
+            status: persistedMapping.canonicalItemAction,
+            id: persistedMapping.canonicalItemId,
+          },
+          itemVariant: {
+            status: persistedMapping.itemVariantAction,
+            id: persistedMapping.itemVariantId,
+          },
+          warnings: seedWarnings,
+        });
+      } catch (error) {
+        const failureReason =
+          error instanceof Error ? error.message : 'Unknown bootstrap failure.';
+        warnings.push(`${seed.marketHashName}: ${failureReason}`);
+
+        this.incrementSummary(seedItems, 'failed');
+        this.incrementSummary(canonicalItems, 'failed');
+        this.incrementSummary(itemVariants, 'failed');
+        results.push({
+          marketHashName: seed.marketHashName,
+          canonicalSlug: mapping.canonicalSlug,
+          variantKey: mapping.variantKey,
+          status: 'failed',
+          canonicalItem: {
+            status: 'failed',
+          },
+          itemVariant: {
+            status: 'failed',
+          },
+          warnings: seedWarnings,
+          failureReason,
+        });
       }
     }
 
     this.logger.log(
-      `Catalog bootstrap "${CONTROLLED_CS2_UNIVERSE}" completed. Created ${canonicalItemsCreated} canonical items and ${itemVariantsCreated} variants.`,
+      `Catalog bootstrap "${CONTROLLED_CS2_UNIVERSE}" completed. Canonical items: ${canonicalItems.created} created, ${canonicalItems.updated} updated, ${canonicalItems.existingMatched} matched. Variants: ${itemVariants.created} created, ${itemVariants.updated} updated, ${itemVariants.existingMatched} matched.`,
       CatalogBootstrapService.name,
     );
 
     return {
       universe: CONTROLLED_CS2_UNIVERSE,
       seededItemCount: CONTROLLED_CS2_UNIVERSE_SEEDS.length,
-      canonicalItemsCreated,
-      itemVariantsCreated,
+      canonicalItemsCreated: canonicalItems.created,
+      itemVariantsCreated: itemVariants.created,
+      seedItems,
+      canonicalItems,
+      itemVariants,
+      results,
       warnings,
     };
+  }
+
+  private createSummary(): MutableCatalogBootstrapSummary {
+    return {
+      existingMatched: 0,
+      created: 0,
+      updated: 0,
+      skipped: 0,
+      failed: 0,
+    };
+  }
+
+  private incrementSummary(
+    summary: MutableCatalogBootstrapSummary,
+    status: CatalogBootstrapStatus,
+  ): void {
+    summary[status] += 1;
+  }
+
+  private resolveSeedStatus(
+    canonicalItemStatus: Extract<CatalogBootstrapStatus, 'existingMatched' | 'created' | 'updated'>,
+    itemVariantStatus: Extract<CatalogBootstrapStatus, 'existingMatched' | 'created' | 'updated'>,
+  ): Extract<CatalogBootstrapStatus, 'existingMatched' | 'created' | 'updated'> {
+    if (
+      canonicalItemStatus === 'created' ||
+      itemVariantStatus === 'created'
+    ) {
+      return 'created';
+    }
+
+    if (
+      canonicalItemStatus === 'updated' ||
+      itemVariantStatus === 'updated'
+    ) {
+      return 'updated';
+    }
+
+    return 'existingMatched';
   }
 }

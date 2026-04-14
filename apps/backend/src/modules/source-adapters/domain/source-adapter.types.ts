@@ -1,6 +1,8 @@
 export const SOURCE_ADAPTER_KEYS = [
   'skinport',
   'csfloat',
+  'dmarket',
+  'waxpeer',
   'youpin',
   'bitskins',
   'c5game',

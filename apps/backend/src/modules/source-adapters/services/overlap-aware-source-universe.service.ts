@@ -9,6 +9,7 @@ import type {
 import type { SourceAdapterKey } from '../domain/source-adapter.types';
 import { SourceRecordService } from './source-record.service';
 import { ManagedMarketNamingService } from './managed-market-naming.service';
+import { SourceOverlapScoringService } from './source-overlap-scoring.service';
 
 interface SelectOverlapAwareBatchesInput {
   readonly source: SourceAdapterKey;
@@ -30,13 +31,6 @@ interface CandidateVariant {
   readonly existingSourceCount: number;
 }
 
-const CORE_OVERLAP_SOURCES: readonly SourceAdapterKey[] = [
-  'skinport',
-  'csfloat',
-  'steam-snapshot',
-  'bitskins',
-];
-
 @Injectable()
 export class OverlapAwareSourceUniverseService {
   constructor(
@@ -46,6 +40,8 @@ export class OverlapAwareSourceUniverseService {
     private readonly sourceRecordService: SourceRecordService,
     @Inject(ManagedMarketNamingService)
     private readonly managedMarketNamingService: ManagedMarketNamingService,
+    @Inject(SourceOverlapScoringService)
+    private readonly sourceOverlapScoringService: SourceOverlapScoringService,
   ) {}
 
   async selectPriorityBatches(
@@ -92,6 +88,7 @@ export class OverlapAwareSourceUniverseService {
         canonicalItem: {
           select: {
             id: true,
+            category: true,
             displayName: true,
           },
         },
@@ -144,13 +141,14 @@ export class OverlapAwareSourceUniverseService {
 
         const marketHashName =
           this.managedMarketNamingService.buildMarketHashName({
+            category: variant.canonicalItem.category,
             canonicalDisplayName: variant.canonicalItem.displayName,
             variantDisplayName: variant.displayName,
             variantKey: variant.variantKey,
             variantMetadata: variant.metadata,
             sourceListingTitle: variant.sourceListings[0]?.title ?? null,
           });
-        const overlapPriority = this.computeOverlapPriority(
+        const overlapScore = this.sourceOverlapScoringService.scoreExistingOverlap(
           uniqueExistingSources,
         );
         const targetFreshnessPenalty = targetState
@@ -164,9 +162,7 @@ export class OverlapAwareSourceUniverseService {
         const recencyBoost = latestObservedAt
           ? Math.max(0, 45 - (now - latestObservedAt.getTime()) / 120_000)
           : 0;
-        const priorityReason = this.resolvePriorityReason(
-          uniqueExistingSources,
-        );
+        const priorityReason = overlapScore.reason;
 
         return {
           canonicalItemId: variant.canonicalItem.id,
@@ -174,7 +170,7 @@ export class OverlapAwareSourceUniverseService {
           marketHashName,
           priorityScore: Number(
             (
-              overlapPriority +
+              overlapScore.score +
               targetFreshnessPenalty +
               recencyBoost +
               uniqueExistingSources.length * 35
@@ -210,49 +206,5 @@ export class OverlapAwareSourceUniverseService {
     }
 
     return batches;
-  }
-
-  private computeOverlapPriority(
-    existingSources: readonly SourceAdapterKey[],
-  ): number {
-    const uniqueSources = new Set(existingSources);
-    const coreOverlapCount = CORE_OVERLAP_SOURCES.filter((sourceCode) =>
-      uniqueSources.has(sourceCode),
-    ).length;
-    const hasThreeWayPotential = uniqueSources.size >= 2 ? 1 : 0;
-
-    return (
-      coreOverlapCount * 220 +
-      uniqueSources.size * 95 +
-      hasThreeWayPotential * 140 +
-      (uniqueSources.has('backup-aggregator') ? 20 : 0)
-    );
-  }
-
-  private resolvePriorityReason(
-    existingSources: readonly SourceAdapterKey[],
-  ): string {
-    const uniqueSources = new Set(existingSources);
-    const coreOverlapCount = CORE_OVERLAP_SOURCES.filter((sourceCode) =>
-      uniqueSources.has(sourceCode),
-    ).length;
-
-    if (coreOverlapCount >= 2) {
-      return 'cross-market-overlap-anchor';
-    }
-
-    if (uniqueSources.size >= 2) {
-      return 'multi-source-expansion';
-    }
-
-    if (uniqueSources.has('steam-snapshot')) {
-      return 'steam-hot-universe-alignment';
-    }
-
-    if (uniqueSources.size === 1) {
-      return 'single-source-hot-universe-followup';
-    }
-
-    return 'broad-hot-universe-bootstrap';
   }
 }

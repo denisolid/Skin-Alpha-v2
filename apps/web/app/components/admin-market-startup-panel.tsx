@@ -23,6 +23,8 @@ type StartupAction =
   | 'catalog-bootstrap'
   | 'sync-skinport'
   | 'sync-csfloat'
+  | 'sync-dmarket'
+  | 'sync-waxpeer'
   | 'sync-steam'
   | 'sync-all'
   | 'market-state-rebuild'
@@ -47,10 +49,10 @@ interface AdminMarketStartupPanelProps {
 
 const startupSteps = [
   '1. Bootstrap the controlled catalog once.',
-  '2. Enqueue source sync jobs.',
-  '3. Wait for sync jobs to finish writing listings and snapshots.',
-  '4. Rebuild latest market state.',
-  '5. Rescan opportunities from internal market state only.',
+  '2. Enqueue parser jobs to fetch raw market payloads.',
+  '3. Let workers archive, normalize, and project market state.',
+  '4. Rebuild latest market state if you need a full projection sweep.',
+  '5. Rescan opportunities from internal normalized market state only.',
 ] as const;
 
 export function AdminMarketStartupPanel({
@@ -203,8 +205,42 @@ export function AdminMarketStartupPanel({
           type="button"
           onClick={() => {
             runAction(
+              'sync-dmarket',
+              () => syncSource('dmarket'),
+              'DMarket sync accepted.',
+            );
+          }}
+        >
+          {activeAction === 'sync-dmarket' && isPending
+            ? 'Queueing...'
+            : 'Sync DMarket'}
+        </button>
+
+        <button
+          className="button-secondary"
+          disabled={isPending}
+          type="button"
+          onClick={() => {
+            runAction(
+              'sync-waxpeer',
+              () => syncSource('waxpeer'),
+              'Waxpeer sync accepted.',
+            );
+          }}
+        >
+          {activeAction === 'sync-waxpeer' && isPending
+            ? 'Queueing...'
+            : 'Sync Waxpeer'}
+        </button>
+
+        <button
+          className="button-secondary"
+          disabled={isPending}
+          type="button"
+          onClick={() => {
+            runAction(
               'sync-steam',
-              () => syncSource('steam'),
+              () => syncSource('steam-snapshot'),
               'Steam snapshot sync accepted.',
             );
           }}

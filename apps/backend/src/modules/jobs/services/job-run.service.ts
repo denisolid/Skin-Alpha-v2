@@ -3,6 +3,10 @@ import { Inject, Injectable } from '@nestjs/common';
 
 import { AppLoggerService } from '../../../infrastructure/logging/app-logger.service';
 import { PrismaService } from '../../../infrastructure/prisma/prisma.service';
+import {
+  MARKET_STATE_REBUILD_QUEUE_NAME,
+  OPPORTUNITY_RESCAN_QUEUE_NAME,
+} from '../domain/jobs-scheduler.constants';
 
 interface QueueJobRunInput {
   readonly queueName: string;
@@ -20,6 +24,9 @@ interface CompleteJobRunInput {
 interface FailJobRunInput extends CompleteJobRunInput {
   readonly errorMessage: string;
 }
+
+const STALE_MAINTENANCE_QUEUED_JOB_AGE_MS = 30 * 60 * 1000;
+const STALE_MAINTENANCE_RUNNING_JOB_AGE_MS = 30 * 60 * 1000;
 
 @Injectable()
 export class JobRunService {
@@ -194,6 +201,9 @@ export class JobRunService {
   }
 
   async hasActiveJob(queueName: string): Promise<boolean> {
+    await this.cancelStaleQueuedMaintenanceJobs(queueName);
+    await this.failStaleRunningMaintenanceJobs(queueName);
+
     const activeJob = await this.prismaService.jobRun.findFirst({
       where: {
         queueName,
@@ -208,6 +218,81 @@ export class JobRunService {
     });
 
     return Boolean(activeJob);
+  }
+
+  private async cancelStaleQueuedMaintenanceJobs(
+    queueName: string,
+  ): Promise<void> {
+    if (
+      queueName !== MARKET_STATE_REBUILD_QUEUE_NAME &&
+      queueName !== OPPORTUNITY_RESCAN_QUEUE_NAME
+    ) {
+      return;
+    }
+
+    const staleQueuedBefore = new Date(
+      Date.now() - STALE_MAINTENANCE_QUEUED_JOB_AGE_MS,
+    );
+    const result = await this.prismaService.jobRun.updateMany({
+      where: {
+        queueName,
+        status: JobRunStatus.QUEUED,
+        startedAt: null,
+        finishedAt: null,
+        queuedAt: {
+          lt: staleQueuedBefore,
+        },
+      },
+      data: {
+        status: JobRunStatus.CANCELED,
+        finishedAt: new Date(),
+        errorMessage: `Automatically canceled stale queued maintenance job after ${Math.round(STALE_MAINTENANCE_QUEUED_JOB_AGE_MS / 60000)} minutes without starting.`,
+      },
+    });
+
+    if (result.count > 0) {
+      this.logger.warn(
+        `Canceled ${result.count} stale queued maintenance job run(s) for ${queueName}.`,
+        JobRunService.name,
+      );
+    }
+  }
+
+  private async failStaleRunningMaintenanceJobs(
+    queueName: string,
+  ): Promise<void> {
+    if (
+      queueName !== MARKET_STATE_REBUILD_QUEUE_NAME &&
+      queueName !== OPPORTUNITY_RESCAN_QUEUE_NAME
+    ) {
+      return;
+    }
+
+    const staleRunningBefore = new Date(
+      Date.now() - STALE_MAINTENANCE_RUNNING_JOB_AGE_MS,
+    );
+    const result = await this.prismaService.jobRun.updateMany({
+      where: {
+        queueName,
+        status: JobRunStatus.RUNNING,
+        finishedAt: null,
+        startedAt: {
+          lt: staleRunningBefore,
+        },
+      },
+      data: {
+        status: JobRunStatus.FAILED,
+        finishedAt: new Date(),
+        errorMessage: `Automatically failed stale running maintenance job after ${Math.round(STALE_MAINTENANCE_RUNNING_JOB_AGE_MS / 60000)} minutes without completing.`,
+      },
+    });
+
+    if (result.count > 0) {
+      this.logger.warn(
+        `Failed ${result.count} stale running maintenance job run(s) for ${queueName}.`,
+        JobRunService.name,
+      );
+    }
   }
 
   async getLatestSuccessfulJob(queueName: string): Promise<{

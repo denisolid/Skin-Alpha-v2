@@ -6,4 +6,11 @@ export interface NormalizedListingStorageResultDto {
   readonly storedCount: number;
   readonly skippedCount: number;
   readonly sourceListingIds: readonly string[];
+  readonly storedListings: readonly {
+    readonly id: string;
+    readonly externalListingId: string;
+    readonly itemVariantId: string;
+    readonly canonicalItemId: string;
+    readonly observedAt: Date;
+  }[];
 }

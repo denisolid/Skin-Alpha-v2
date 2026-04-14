@@ -3,6 +3,7 @@ import Redis from 'ioredis';
 
 import { AppConfigService } from '../config/app-config.service';
 import { REDIS_CLIENT } from './redis.constants';
+import { ReadPathDegradationService } from './read-path-degradation.service';
 import { RedisService } from './redis.service';
 
 @Global()
@@ -19,7 +20,8 @@ import { RedisService } from './redis.service';
         }),
     },
     RedisService,
+    ReadPathDegradationService,
   ],
-  exports: [REDIS_CLIENT, RedisService],
+  exports: [REDIS_CLIENT, RedisService, ReadPathDegradationService],
 })
 export class RedisModule {}

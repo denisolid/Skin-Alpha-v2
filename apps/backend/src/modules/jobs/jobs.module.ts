@@ -92,7 +92,7 @@ const jobsWorkerProviders: Provider[] = RUNS_BACKGROUND_PROCESSORS
 const jobsSchedulerImports = RUNS_SCHEDULER ? [ScheduleModule.forRoot()] : [];
 
 const jobsSchedulerProviders: Provider[] = RUNS_SCHEDULER
-  ? [SchedulerLockService, SmartSchedulerService]
+  ? [SmartSchedulerService]
   : [];
 
 @Module({
@@ -108,6 +108,7 @@ const jobsSchedulerProviders: Provider[] = RUNS_SCHEDULER
     JobsService,
     JobRunService,
     JobsMaintenanceDispatchService,
+    SchedulerLockService,
     ...jobsSchedulerProviders,
     ...jobsQueueProviders,
     ...jobsWorkerProviders,
@@ -116,5 +117,6 @@ const jobsSchedulerProviders: Provider[] = RUNS_SCHEDULER
       useClass: JobsRepositoryAdapter,
     },
   ],
+  exports: [SchedulerLockService],
 })
 export class JobsModule {}

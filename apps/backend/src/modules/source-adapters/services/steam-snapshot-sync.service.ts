@@ -9,14 +9,21 @@ import { Inject, Injectable } from '@nestjs/common';
 
 import { AppConfigService } from '../../../infrastructure/config/app-config.service';
 import { MarketStateUpdaterService } from '../../market-state/services/market-state-updater.service';
+import { UPDATE_MARKET_STATE_QUEUE_NAME } from '../domain/source-ingestion.constants';
 import { RawPayloadArchiveService } from './raw-payload-archive.service';
+import { IngestionDiagnosticsService } from './ingestion-diagnostics.service';
+import { PendingSourceMappingService } from './pending-source-mapping.service';
+import { SourceFetchJobService } from './source-fetch-job.service';
+import { SourceFreshnessService } from './source-freshness.service';
+import { SourceMarketFactStorageService } from './source-market-fact-storage.service';
 import { SourceOperationsService } from './source-operations.service';
+import { SourcePayloadNormalizationService } from './source-payload-normalization.service';
+import { SourceProvenanceService } from './source-provenance.service';
 import { SteamSnapshotUniverseService } from './steam-snapshot-universe.service';
 import {
   SteamSnapshotHttpClientService,
   SteamSnapshotHttpError,
 } from './steam-snapshot-http-client.service';
-import { SteamSnapshotPayloadNormalizerService } from './steam-snapshot-payload-normalizer.service';
 import { SteamSnapshotRateLimitService } from './steam-snapshot-rate-limit.service';
 import { SteamSnapshotFallbackService } from './steam-snapshot-fallback.service';
 import {
@@ -45,16 +52,28 @@ export class SteamSnapshotSyncService {
     private readonly configService: AppConfigService,
     @Inject(RawPayloadArchiveService)
     private readonly rawPayloadArchiveService: RawPayloadArchiveService,
+    @Inject(IngestionDiagnosticsService)
+    private readonly ingestionDiagnosticsService: IngestionDiagnosticsService,
     @Inject(MarketStateUpdaterService)
     private readonly marketStateUpdaterService: MarketStateUpdaterService,
+    @Inject(PendingSourceMappingService)
+    private readonly pendingSourceMappingService: PendingSourceMappingService,
+    @Inject(SourceFetchJobService)
+    private readonly sourceFetchJobService: SourceFetchJobService,
+    @Inject(SourceFreshnessService)
+    private readonly sourceFreshnessService: SourceFreshnessService,
+    @Inject(SourceMarketFactStorageService)
+    private readonly sourceMarketFactStorageService: SourceMarketFactStorageService,
     @Inject(SourceOperationsService)
     private readonly sourceOperationsService: SourceOperationsService,
+    @Inject(SourcePayloadNormalizationService)
+    private readonly sourcePayloadNormalizationService: SourcePayloadNormalizationService,
+    @Inject(SourceProvenanceService)
+    private readonly sourceProvenanceService: SourceProvenanceService,
     @Inject(SteamSnapshotUniverseService)
     private readonly steamSnapshotUniverseService: SteamSnapshotUniverseService,
     @Inject(SteamSnapshotHttpClientService)
     private readonly steamSnapshotHttpClientService: SteamSnapshotHttpClientService,
-    @Inject(SteamSnapshotPayloadNormalizerService)
-    private readonly steamSnapshotPayloadNormalizerService: SteamSnapshotPayloadNormalizerService,
     @Inject(SteamSnapshotRateLimitService)
     private readonly steamSnapshotRateLimitService: SteamSnapshotRateLimitService,
     @Inject(SteamSnapshotFallbackService)
@@ -372,13 +391,43 @@ export class SteamSnapshotSyncService {
         : 207,
     });
     const normalizedPayload =
-      this.steamSnapshotPayloadNormalizerService.normalize(archive);
-    const marketStateResult =
-      await this.marketStateUpdaterService.updateLatestStateBatch({
-        source: 'steam-snapshot',
-        marketStates: normalizedPayload.marketStates,
+      await this.sourcePayloadNormalizationService.normalizeArchivedPayload({
         rawPayloadArchiveId: archive.id,
+        source: 'steam-snapshot',
       });
+    const marketFactStorageResult =
+      await this.sourceMarketFactStorageService.storeNormalizedMarketFacts(
+        normalizedPayload,
+      );
+    const pendingMappings =
+      await this.pendingSourceMappingService.captureFromPayload(
+        normalizedPayload,
+      );
+
+    await Promise.all([
+      this.sourceProvenanceService.recordMarketFacts(
+        normalizedPayload,
+        marketFactStorageResult,
+      ),
+      this.sourceFreshnessService.recordNormalizedPayload(normalizedPayload),
+      this.sourceFetchJobService.recordNormalization(
+        normalizedPayload.fetchJobId,
+        marketFactStorageResult.storedCount,
+        normalizedPayload.warnings.length + pendingMappings,
+      ),
+    ]);
+
+    const marketStateResult =
+      normalizedPayload.marketStates.length === 0
+        ? {
+            source: 'steam-snapshot' as const,
+            rawPayloadArchiveId: archive.id,
+            snapshotCount: 0,
+            upsertedStateCount: 0,
+            skippedCount: 0,
+            unchangedProjectionSkipCount: 0,
+          }
+        : await this.projectMarketStates(archive.id, normalizedPayload.marketStates);
 
     return {
       targetCount: batch.targets.length,
@@ -392,6 +441,44 @@ export class SteamSnapshotSyncService {
       updatedStateCount: marketStateResult.upsertedStateCount,
       rateLimited,
     };
+  }
+
+  private async projectMarketStates(
+    rawPayloadArchiveId: string,
+    marketStates: Awaited<
+      ReturnType<SourcePayloadNormalizationService['normalizeArchivedPayload']>
+    >['marketStates'],
+  ) {
+    const projectionStartedAt = Date.now();
+    const marketStateResult =
+      await this.marketStateUpdaterService.updateLatestStateBatch({
+        source: 'steam-snapshot',
+        marketStates,
+        rawPayloadArchiveId,
+      });
+    await this.sourceFreshnessService.markProjectedMarketStates({
+      source: 'steam-snapshot',
+      marketStates,
+      updatedAt: new Date(),
+    });
+    await this.ingestionDiagnosticsService.recordStageMetric({
+      source: 'steam-snapshot',
+      stage: UPDATE_MARKET_STATE_QUEUE_NAME,
+      status:
+        marketStateResult.skippedCount > 0
+          ? HealthStatus.DEGRADED
+          : HealthStatus.OK,
+      latencyMs: Date.now() - projectionStartedAt,
+      details: {
+        snapshotCount: marketStateResult.snapshotCount,
+        upsertedStateCount: marketStateResult.upsertedStateCount,
+        skippedCount: marketStateResult.skippedCount,
+        unchangedProjectionSkipCount:
+          marketStateResult.unchangedProjectionSkipCount,
+      },
+    });
+
+    return marketStateResult;
   }
 
   private async cancelSync(jobRunId: string, details: unknown): Promise<void> {

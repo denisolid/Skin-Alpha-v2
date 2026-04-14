@@ -3,8 +3,12 @@ import type { ItemCategory } from '@prisma/client';
 import type { AntiFakeAssessment, OpportunityAntiFakeCounters } from './anti-fake.model';
 import type {
   OpportunityEvaluationDisposition,
+  OpportunityBlockerReason,
   OpportunityEngineRiskClass,
+  OpportunityRiskReasonCode,
+  OpportunityRiskReasonSeverity,
   OpportunityReasonCode,
+  OpportunitySurfaceTier,
 } from './opportunity-engine.model';
 import type { MergedMarketMatrixDto, MarketFetchMode } from '../../market-state/dto/merged-market-matrix.dto';
 import type { SourceAdapterKey } from '../../source-adapters/domain/source-adapter.types';
@@ -13,6 +17,7 @@ import type { CompiledScheme } from '../../schemes/domain/scheme.model';
 export interface EvaluateOpportunityVariantInput {
   readonly includeRejected?: boolean;
   readonly maxPairs?: number;
+  readonly allowHistoricalFallback?: boolean;
   readonly scheme?: CompiledScheme;
 }
 
@@ -43,6 +48,78 @@ export interface OpportunitySourceLegDto {
   readonly confidence: number;
   readonly snapshotId?: string;
   readonly rawPayloadArchiveId?: string;
+}
+
+export interface OpportunityComponentScoresDto {
+  readonly mappingConfidence: number;
+  readonly priceConfidence: number;
+  readonly liquidityConfidence: number;
+  readonly freshnessConfidence: number;
+  readonly sourceReliabilityConfidence: number;
+  readonly variantMatchConfidence: number;
+}
+
+export interface OpportunityExecutionBreakdownDto {
+  readonly realizedSellPrice: number;
+  readonly buyPrice: number;
+  readonly fees: number;
+  readonly slippagePenalty: number;
+  readonly liquidityPenalty: number;
+  readonly uncertaintyPenalty: number;
+  readonly expectedNet: number;
+}
+
+export interface OpportunityRiskReasonDto {
+  readonly code: OpportunityRiskReasonCode;
+  readonly severity: OpportunityRiskReasonSeverity;
+  readonly detail: string;
+}
+
+export interface OpportunityStrictTradableKeyDto {
+  readonly key: string;
+  readonly condition: string;
+  readonly stattrak: boolean;
+  readonly souvenir: boolean;
+  readonly vanilla: boolean;
+  readonly phase: string;
+  readonly patternSensitiveBucket: string;
+  readonly floatBucket: string;
+}
+
+export interface OpportunityStrictTradableMatchDto {
+  readonly matched: boolean;
+  readonly buyKey?: OpportunityStrictTradableKeyDto;
+  readonly sellKey?: OpportunityStrictTradableKeyDto;
+}
+
+export interface OpportunityPreScoreGateDto {
+  readonly passed: boolean;
+  readonly comparableCount: number;
+  readonly sourceMedian?: number;
+  readonly crossSourceConsensus?: number;
+  readonly rejectedByStale: boolean;
+  readonly rejectedByMedian: boolean;
+  readonly rejectedByConsensus: boolean;
+  readonly rejectedByComparableCount: boolean;
+  readonly reasonCodes: readonly OpportunityReasonCode[];
+}
+
+export interface OpportunityEligibilityDto {
+  readonly surfaceTier: OpportunitySurfaceTier;
+  readonly eligible: boolean;
+  readonly requiresReferenceSupport: boolean;
+  readonly steamSnapshotDemoted: boolean;
+  readonly blockerReason?: OpportunityBlockerReason;
+}
+
+export interface OpportunityFunnelMetricsDto {
+  readonly fetched: number;
+  readonly normalized: number;
+  readonly canonicalMatched: number;
+  readonly pairable: number;
+  readonly candidate: number;
+  readonly eligible: number;
+  readonly surfaced: number;
 }
 
 export type OpportunityValidationStatus = 'passed' | 'warned' | 'rejected';
@@ -76,6 +153,7 @@ export interface OpportunityExplainabilityDto {
 }
 
 export interface OpportunityRankingInputsDto {
+  readonly surfaceTierRank: number;
   readonly dispositionRank: number;
   readonly bucketBase: number;
   readonly qualityScore: number;
@@ -93,8 +171,10 @@ export interface OpportunityRankingInputsDto {
 export interface OpportunityEvaluationDto {
   readonly opportunityKey: string;
   readonly disposition: OpportunityEvaluationDisposition;
+  readonly surfaceTier: OpportunitySurfaceTier;
   readonly reasonCodes: readonly OpportunityReasonCode[];
   readonly riskClass: OpportunityEngineRiskClass;
+  readonly riskReasons: readonly OpportunityRiskReasonDto[];
   readonly category: ItemCategory;
   readonly canonicalItemId: string;
   readonly canonicalDisplayName: string;
@@ -111,9 +191,14 @@ export interface OpportunityEvaluationDto {
   readonly estimatedSellFeeRate: number;
   readonly buyCost: number;
   readonly sellSignalPrice: number;
+  readonly componentScores: OpportunityComponentScoresDto;
+  readonly execution: OpportunityExecutionBreakdownDto;
   readonly finalConfidence: number;
   readonly penalties: OpportunityPenaltyBreakdownDto;
   readonly antiFakeAssessment: AntiFakeAssessment;
+  readonly strictTradable: OpportunityStrictTradableMatchDto;
+  readonly preScoreGate: OpportunityPreScoreGateDto;
+  readonly eligibility: OpportunityEligibilityDto;
   readonly validation: OpportunityValidationDto;
   readonly pairability: OpportunityPairabilityDto;
   readonly explainability: OpportunityExplainabilityDto;
@@ -136,6 +221,7 @@ export interface OpportunityEngineVariantResultDto {
   readonly returnedPairCount: number;
   readonly dispositionSummary: Record<OpportunityEvaluationDisposition, number>;
   readonly antiFakeCounters: OpportunityAntiFakeCounters;
+  readonly diagnostics: OpportunityFunnelMetricsDto;
   readonly evaluations: readonly OpportunityEvaluationDto[];
 }
 
@@ -145,6 +231,7 @@ export interface OpportunityEngineScanResultDto {
   readonly evaluatedPairCount: number;
   readonly dispositionSummary: Record<OpportunityEvaluationDisposition, number>;
   readonly antiFakeCounters: OpportunityAntiFakeCounters;
+  readonly diagnostics: OpportunityFunnelMetricsDto;
   readonly results: readonly OpportunityEngineVariantResultDto[];
 }
 

@@ -1,10 +1,13 @@
-import { ListingStatus } from '@prisma/client';
+import { HealthStatus, ListingStatus } from '@prisma/client';
 import { Inject, Injectable } from '@nestjs/common';
 
 import { AppConfigService } from '../../../infrastructure/config/app-config.service';
 import { PrismaService } from '../../../infrastructure/prisma/prisma.service';
 import { MarketStateUpdaterService } from '../../market-state/services/market-state-updater.service';
+import { UPDATE_MARKET_STATE_QUEUE_NAME } from '../domain/source-ingestion.constants';
 import type { NormalizedMarketStateDto } from '../dto/normalized-market-state.dto';
+import { IngestionDiagnosticsService } from './ingestion-diagnostics.service';
+import { SourceFreshnessService } from './source-freshness.service';
 import { SourceRecordService } from './source-record.service';
 
 interface ReconcileAndRebuildInput {
@@ -37,6 +40,10 @@ export class CsFloatMarketStateService {
     private readonly sourceRecordService: SourceRecordService,
     @Inject(MarketStateUpdaterService)
     private readonly marketStateUpdaterService: MarketStateUpdaterService,
+    @Inject(SourceFreshnessService)
+    private readonly sourceFreshnessService: SourceFreshnessService,
+    @Inject(IngestionDiagnosticsService)
+    private readonly ingestionDiagnosticsService: IngestionDiagnosticsService,
   ) {}
 
   async reconcileAndRebuild(
@@ -193,9 +200,32 @@ export class CsFloatMarketStateService {
       },
     );
 
-    await this.marketStateUpdaterService.updateLatestStateBatch({
+    const projectionStartedAt = Date.now();
+    const projectionResult =
+      await this.marketStateUpdaterService.updateLatestStateBatch({
+        source: 'csfloat',
+        marketStates,
+      });
+    await this.sourceFreshnessService.markProjectedMarketStates({
       source: 'csfloat',
       marketStates,
+      updatedAt: new Date(),
+    });
+    await this.ingestionDiagnosticsService.recordStageMetric({
+      source: 'csfloat',
+      stage: UPDATE_MARKET_STATE_QUEUE_NAME,
+      status:
+        projectionResult.skippedCount > 0
+          ? HealthStatus.DEGRADED
+          : HealthStatus.OK,
+      latencyMs: Date.now() - projectionStartedAt,
+      details: {
+        snapshotCount: projectionResult.snapshotCount,
+        upsertedStateCount: projectionResult.upsertedStateCount,
+        skippedCount: projectionResult.skippedCount,
+        unchangedProjectionSkipCount:
+          projectionResult.unchangedProjectionSkipCount,
+      },
     });
 
     return {

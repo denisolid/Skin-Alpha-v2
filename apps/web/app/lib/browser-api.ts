@@ -5,6 +5,7 @@ import type {
   CatalogBootstrapResult,
   MarketStateRebuildResult,
   OpportunityRescanResult,
+  SourceAdapterKey,
   SourceSyncAccepted,
   SourceSyncBatchAccepted,
 } from './types';
@@ -97,7 +98,10 @@ export function bootstrapCatalog(): Promise<CatalogBootstrapResult> {
 }
 
 export function syncSource(
-  source: 'skinport' | 'csfloat' | 'steam',
+  source: Extract<
+    SourceAdapterKey,
+    'skinport' | 'csfloat' | 'dmarket' | 'waxpeer' | 'steam-snapshot'
+  >,
 ): Promise<SourceSyncAccepted> {
   return browserApiRequest<SourceSyncAccepted>(
     `/admin/sources/sync/${source}`,

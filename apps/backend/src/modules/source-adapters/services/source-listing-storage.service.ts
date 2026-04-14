@@ -3,6 +3,8 @@ import { Inject, Injectable } from '@nestjs/common';
 
 import { AppLoggerService } from '../../../infrastructure/logging/app-logger.service';
 import { PrismaService } from '../../../infrastructure/prisma/prisma.service';
+import { CatalogAliasNormalizationService } from '../../catalog/services/catalog-alias-normalization.service';
+import type { SourceAdapterKey } from '../domain/source-adapter.types';
 import type { NormalizedListingStorageResultDto } from '../dto/normalized-listing-storage-result.dto';
 import type { NormalizedSourcePayloadDto } from '../dto/normalized-source-payload.dto';
 import { SourceRecordService } from './source-record.service';
@@ -14,6 +16,8 @@ export class SourceListingStorageService {
     private readonly logger: AppLoggerService,
     @Inject(PrismaService)
     private readonly prismaService: PrismaService,
+    @Inject(CatalogAliasNormalizationService)
+    private readonly aliasNormalizationService: CatalogAliasNormalizationService,
     @Inject(SourceRecordService)
     private readonly sourceRecordService: SourceRecordService,
   ) {}
@@ -23,6 +27,9 @@ export class SourceListingStorageService {
   ): Promise<NormalizedListingStorageResultDto> {
     const source = await this.sourceRecordService.resolveByKey(input.source);
     const sourceListingIds: string[] = [];
+    const storedListings: Array<
+      NormalizedListingStorageResultDto['storedListings'][number]
+    > = [];
     let skippedCount = 0;
 
     for (const listing of input.listings) {
@@ -30,6 +37,8 @@ export class SourceListingStorageService {
         skippedCount += 1;
         continue;
       }
+
+      const normalizedTitle = this.normalizeTitle(listing.title);
 
       const storedListing = await this.prismaService.sourceListing.upsert({
         where: {
@@ -44,8 +53,8 @@ export class SourceListingStorageService {
           sourceItemId: listing.sourceItemId,
           canonicalItemId: listing.canonicalItemId,
           itemVariantId: listing.itemVariantId,
-          title: listing.title,
-          normalizedTitle: this.normalizeTitle(listing.title),
+          title: normalizedTitle,
+          normalizedTitle,
           ...(listing.listingUrl ? { listingUrl: listing.listingUrl } : {}),
           currencyCode: this.normalizeCurrencyCode(listing.currency),
           priceGross: this.minorToRequiredDecimal(listing.priceMinor),
@@ -59,8 +68,8 @@ export class SourceListingStorageService {
           sourceItemId: listing.sourceItemId,
           canonicalItemId: listing.canonicalItemId,
           itemVariantId: listing.itemVariantId,
-          title: listing.title,
-          normalizedTitle: this.normalizeTitle(listing.title),
+          title: normalizedTitle,
+          normalizedTitle,
           ...(listing.listingUrl ? { listingUrl: listing.listingUrl } : {}),
           currencyCode: this.normalizeCurrencyCode(listing.currency),
           priceGross: this.minorToRequiredDecimal(listing.priceMinor),
@@ -73,6 +82,13 @@ export class SourceListingStorageService {
       });
 
       sourceListingIds.push(storedListing.id);
+      storedListings.push({
+        id: storedListing.id,
+        externalListingId: listing.externalListingId,
+        itemVariantId: listing.itemVariantId,
+        canonicalItemId: listing.canonicalItemId,
+        observedAt: listing.observedAt,
+      });
     }
 
     this.logger.log(
@@ -86,7 +102,36 @@ export class SourceListingStorageService {
       storedCount: sourceListingIds.length,
       skippedCount,
       sourceListingIds,
+      storedListings,
     };
+  }
+
+  async refreshActiveListingsHeartbeatForVariants(input: {
+    readonly source: SourceAdapterKey;
+    readonly itemVariantIds: readonly string[];
+    readonly observedAt: Date;
+  }): Promise<number> {
+    const itemVariantIds = [...new Set(input.itemVariantIds)];
+
+    if (itemVariantIds.length === 0) {
+      return 0;
+    }
+
+    const source = await this.sourceRecordService.resolveByKey(input.source);
+    const result = await this.prismaService.sourceListing.updateMany({
+      where: {
+        sourceId: source.id,
+        listingStatus: ListingStatus.ACTIVE,
+        itemVariantId: {
+          in: itemVariantIds,
+        },
+      },
+      data: {
+        lastSeenAt: input.observedAt,
+      },
+    });
+
+    return result.count;
   }
 
   private buildListingAttributes(
@@ -114,7 +159,7 @@ export class SourceListingStorageService {
   }
 
   private normalizeTitle(title: string): string {
-    return title.trim().replace(/\s+/g, ' ');
+    return this.aliasNormalizationService.normalizeMarketHashName(title);
   }
 
   private minorToRequiredDecimal(value: number): Prisma.Decimal {

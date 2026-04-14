@@ -54,6 +54,25 @@ export interface EnvironmentVariables {
   CSFLOAT_LISTINGS_RATE_LIMIT_MAX_REQUESTS: number;
   CSFLOAT_DETAIL_RATE_LIMIT_WINDOW_SECONDS: number;
   CSFLOAT_DETAIL_RATE_LIMIT_MAX_REQUESTS: number;
+  ENABLE_DMARKET: boolean;
+  DMARKET_API_BASE_URL: string;
+  DMARKET_PUBLIC_KEY?: string;
+  DMARKET_SECRET_KEY?: string;
+  DMARKET_CURRENCY: string;
+  DMARKET_PAGE_LIMIT: number;
+  DMARKET_BATCH_SIZE: number;
+  DMARKET_BATCH_BUDGET: number;
+  DMARKET_RATE_LIMIT_WINDOW_SECONDS: number;
+  DMARKET_RATE_LIMIT_MAX_REQUESTS: number;
+  ENABLE_WAXPEER: boolean;
+  WAXPEER_API_BASE_URL: string;
+  WAXPEER_API_KEY?: string;
+  WAXPEER_GAME: string;
+  WAXPEER_CURRENCY: string;
+  WAXPEER_NAME_BATCH_SIZE: number;
+  WAXPEER_BATCH_BUDGET: number;
+  WAXPEER_RATE_LIMIT_WINDOW_SECONDS: number;
+  WAXPEER_RATE_LIMIT_MAX_REQUESTS: number;
   ENABLE_YOUPIN: boolean;
   YOUPIN_REFERENCE_ONLY: boolean;
   YOUPIN_API_BASE_URL: string;
@@ -118,6 +137,8 @@ export interface EnvironmentVariables {
   SCHEDULER_DEGRADED_INTERVAL_MULTIPLIER: number;
   SCHEDULER_DOWN_INTERVAL_MULTIPLIER: number;
   SCHEDULER_CSFLOAT_MIN_INTERVAL_MINUTES: number;
+  SCHEDULER_DMARKET_MIN_INTERVAL_MINUTES: number;
+  SCHEDULER_WAXPEER_MIN_INTERVAL_MINUTES: number;
   SCHEDULER_STEAM_SNAPSHOT_MIN_INTERVAL_MINUTES: number;
   SCHEDULER_SKINPORT_MIN_INTERVAL_MINUTES: number;
   SCHEDULER_BITSKINS_MIN_INTERVAL_MINUTES: number;
@@ -262,6 +283,21 @@ export function validateEnv(
     typeof config.CSFLOAT_API_KEY === 'string' &&
     config.CSFLOAT_API_KEY.length > 0
       ? config.CSFLOAT_API_KEY
+      : undefined;
+  const dmarketPublicKey =
+    typeof config.DMARKET_PUBLIC_KEY === 'string' &&
+    config.DMARKET_PUBLIC_KEY.length > 0
+      ? config.DMARKET_PUBLIC_KEY
+      : undefined;
+  const dmarketSecretKey =
+    typeof config.DMARKET_SECRET_KEY === 'string' &&
+    config.DMARKET_SECRET_KEY.length > 0
+      ? config.DMARKET_SECRET_KEY
+      : undefined;
+  const waxpeerApiKey =
+    typeof config.WAXPEER_API_KEY === 'string' &&
+    config.WAXPEER_API_KEY.length > 0
+      ? config.WAXPEER_API_KEY
       : undefined;
   const youpinApiKey =
     typeof config.YOUPIN_API_KEY === 'string' &&
@@ -479,6 +515,78 @@ export function validateEnv(
     CSFLOAT_DETAIL_RATE_LIMIT_MAX_REQUESTS: readNumber(
       config.CSFLOAT_DETAIL_RATE_LIMIT_MAX_REQUESTS,
       'CSFLOAT_DETAIL_RATE_LIMIT_MAX_REQUESTS',
+      20,
+    ),
+    ENABLE_DMARKET: readBoolean(config.ENABLE_DMARKET, false),
+    DMARKET_API_BASE_URL: readString(
+      config.DMARKET_API_BASE_URL,
+      'DMARKET_API_BASE_URL',
+      'https://api.dmarket.com',
+    ),
+    DMARKET_CURRENCY: readString(
+      config.DMARKET_CURRENCY,
+      'DMARKET_CURRENCY',
+      'USD',
+    ),
+    DMARKET_PAGE_LIMIT: readNumber(
+      config.DMARKET_PAGE_LIMIT,
+      'DMARKET_PAGE_LIMIT',
+      50,
+    ),
+    DMARKET_BATCH_SIZE: readNumber(
+      config.DMARKET_BATCH_SIZE,
+      'DMARKET_BATCH_SIZE',
+      6,
+    ),
+    DMARKET_BATCH_BUDGET: readNumber(
+      config.DMARKET_BATCH_BUDGET,
+      'DMARKET_BATCH_BUDGET',
+      2,
+    ),
+    DMARKET_RATE_LIMIT_WINDOW_SECONDS: readNumber(
+      config.DMARKET_RATE_LIMIT_WINDOW_SECONDS,
+      'DMARKET_RATE_LIMIT_WINDOW_SECONDS',
+      60,
+    ),
+    DMARKET_RATE_LIMIT_MAX_REQUESTS: readNumber(
+      config.DMARKET_RATE_LIMIT_MAX_REQUESTS,
+      'DMARKET_RATE_LIMIT_MAX_REQUESTS',
+      20,
+    ),
+    ENABLE_WAXPEER: readBoolean(config.ENABLE_WAXPEER, false),
+    WAXPEER_API_BASE_URL: readString(
+      config.WAXPEER_API_BASE_URL,
+      'WAXPEER_API_BASE_URL',
+      'https://api.waxpeer.com',
+    ),
+    WAXPEER_GAME: readString(
+      config.WAXPEER_GAME,
+      'WAXPEER_GAME',
+      'csgo',
+    ),
+    WAXPEER_CURRENCY: readString(
+      config.WAXPEER_CURRENCY,
+      'WAXPEER_CURRENCY',
+      'USD',
+    ),
+    WAXPEER_NAME_BATCH_SIZE: readNumber(
+      config.WAXPEER_NAME_BATCH_SIZE,
+      'WAXPEER_NAME_BATCH_SIZE',
+      12,
+    ),
+    WAXPEER_BATCH_BUDGET: readNumber(
+      config.WAXPEER_BATCH_BUDGET,
+      'WAXPEER_BATCH_BUDGET',
+      2,
+    ),
+    WAXPEER_RATE_LIMIT_WINDOW_SECONDS: readNumber(
+      config.WAXPEER_RATE_LIMIT_WINDOW_SECONDS,
+      'WAXPEER_RATE_LIMIT_WINDOW_SECONDS',
+      60,
+    ),
+    WAXPEER_RATE_LIMIT_MAX_REQUESTS: readNumber(
+      config.WAXPEER_RATE_LIMIT_MAX_REQUESTS,
+      'WAXPEER_RATE_LIMIT_MAX_REQUESTS',
       20,
     ),
     ENABLE_YOUPIN: readBoolean(config.ENABLE_YOUPIN, false),
@@ -746,6 +854,16 @@ export function validateEnv(
       'SCHEDULER_CSFLOAT_MIN_INTERVAL_MINUTES',
       4,
     ),
+    SCHEDULER_DMARKET_MIN_INTERVAL_MINUTES: readNumber(
+      config.SCHEDULER_DMARKET_MIN_INTERVAL_MINUTES,
+      'SCHEDULER_DMARKET_MIN_INTERVAL_MINUTES',
+      10,
+    ),
+    SCHEDULER_WAXPEER_MIN_INTERVAL_MINUTES: readNumber(
+      config.SCHEDULER_WAXPEER_MIN_INTERVAL_MINUTES,
+      'SCHEDULER_WAXPEER_MIN_INTERVAL_MINUTES',
+      8,
+    ),
     SCHEDULER_STEAM_SNAPSHOT_MIN_INTERVAL_MINUTES: readNumber(
       config.SCHEDULER_STEAM_SNAPSHOT_MIN_INTERVAL_MINUTES,
       'SCHEDULER_STEAM_SNAPSHOT_MIN_INTERVAL_MINUTES',
@@ -813,6 +931,9 @@ export function validateEnv(
       ? { SKINPORT_CLIENT_SECRET: skinportClientSecret }
       : {}),
     ...(csfloatApiKey ? { CSFLOAT_API_KEY: csfloatApiKey } : {}),
+    ...(dmarketPublicKey ? { DMARKET_PUBLIC_KEY: dmarketPublicKey } : {}),
+    ...(dmarketSecretKey ? { DMARKET_SECRET_KEY: dmarketSecretKey } : {}),
+    ...(waxpeerApiKey ? { WAXPEER_API_KEY: waxpeerApiKey } : {}),
     ...(youpinApiKey ? { YOUPIN_API_KEY: youpinApiKey } : {}),
     ...(bitskinsApiKey ? { BITSKINS_API_KEY: bitskinsApiKey } : {}),
     ...(c5gameApiKey ? { C5GAME_API_KEY: c5gameApiKey } : {}),

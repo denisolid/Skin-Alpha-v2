@@ -4,11 +4,18 @@ import type { CatalogUseCase } from '../application/catalog.use-case';
 import {
   CATALOG_REPOSITORY,
   type CatalogRepository,
+  type PersistCatalogMappingInput,
+  type PersistedCatalogMapping,
 } from '../domain/catalog.repository';
 import type { CatalogResolutionDto } from '../dto/catalog-resolution.dto';
 import type { CatalogSourceListingInputDto } from '../dto/catalog-source-listing-input.dto';
 import { CatalogStatusDto } from '../dto/catalog-status.dto';
 import { CatalogMappingService } from './catalog-mapping.service';
+
+export interface CatalogResolvedSourceListingResult {
+  readonly resolution: CatalogResolutionDto;
+  readonly persistedMapping?: PersistedCatalogMapping;
+}
 
 @Injectable()
 export class CatalogService implements CatalogUseCase {
@@ -26,40 +33,96 @@ export class CatalogService implements CatalogUseCase {
   async resolveSourceListing(
     input: CatalogSourceListingInputDto,
   ): Promise<CatalogResolutionDto> {
-    const mapping = this.catalogMappingService.mapSourceListing(input);
+    const [result] = await this.resolveSourceListingsWithPersistence([input]);
 
-    if (
-      mapping.confidence < 0.75 ||
-      mapping.canonicalSlug.length === 0 ||
-      mapping.canonicalDisplayName.length === 0
-    ) {
-      return {
-        status: 'unresolved',
-        confidence: mapping.confidence,
-        reason:
-          mapping.canonicalDisplayName.length === 0
-            ? 'catalog_missing_display_name'
-            : 'catalog_low_confidence_match',
-        warnings: mapping.warnings,
-        mapping,
-      };
+    if (!result) {
+      throw new Error('Catalog resolution unexpectedly returned no result.');
     }
 
-    const persistedMapping = await this.catalogRepository.upsertResolvedMapping(
-      {
+    return result.resolution;
+  }
+
+  async resolveSourceListings(
+    inputs: readonly CatalogSourceListingInputDto[],
+  ): Promise<readonly CatalogResolutionDto[]> {
+    const results = await this.resolveSourceListingsWithPersistence(inputs);
+
+    return results.map((result) => result.resolution);
+  }
+
+  async resolveSourceListingsWithPersistence(
+    inputs: readonly CatalogSourceListingInputDto[],
+  ): Promise<readonly CatalogResolvedSourceListingResult[]> {
+    if (inputs.length === 0) {
+      return [];
+    }
+
+    const persistedInputs: PersistCatalogMappingInput[] = [];
+    const results = new Array<CatalogResolvedSourceListingResult>(inputs.length);
+
+    inputs.forEach((input, index) => {
+      const mapping = this.catalogMappingService.mapSourceListing(input);
+
+      if (
+        mapping.confidence < 0.75 ||
+        mapping.canonicalSlug.length === 0 ||
+        mapping.canonicalDisplayName.length === 0
+      ) {
+        results[index] = {
+          resolution: {
+            status: 'unresolved',
+            confidence: mapping.confidence,
+            reason:
+              mapping.canonicalDisplayName.length === 0
+                ? 'catalog_missing_display_name'
+                : 'catalog_low_confidence_match',
+            warnings: mapping.warnings,
+            mapping,
+          } satisfies CatalogResolutionDto,
+        };
+        return;
+      }
+
+      persistedInputs.push({
         source: input.source,
         mapping,
-      },
-    );
+      });
+    });
+    const persistedMappings =
+      await this.catalogRepository.upsertResolvedMappings(
+        persistedInputs,
+      );
+    let persistedIndex = 0;
 
-    return {
-      status: 'resolved',
-      confidence: mapping.confidence,
-      warnings: mapping.warnings,
-      mapping,
-      canonicalItemId: persistedMapping.canonicalItemId,
-      itemVariantId: persistedMapping.itemVariantId,
-      category: persistedMapping.category,
-    };
+    inputs.forEach((input, index) => {
+      if (results[index]) {
+        return;
+      }
+
+      const persistedInput = persistedInputs[persistedIndex];
+      const persistedMapping = persistedMappings[persistedIndex];
+
+      persistedIndex += 1;
+      if (!persistedInput || !persistedMapping) {
+        throw new Error(
+          `Catalog repository returned fewer persisted mappings than expected for ${input.source}:${input.marketHashName}.`,
+        );
+      }
+
+      results[index] = {
+        resolution: {
+          status: 'resolved',
+          confidence: persistedInput.mapping.confidence,
+          warnings: persistedInput.mapping.warnings,
+          mapping: persistedInput.mapping,
+          canonicalItemId: persistedMapping.canonicalItemId,
+          itemVariantId: persistedMapping.itemVariantId,
+          category: persistedMapping.category,
+        },
+        persistedMapping,
+      } satisfies CatalogResolvedSourceListingResult;
+    });
+
+    return results;
   }
 }

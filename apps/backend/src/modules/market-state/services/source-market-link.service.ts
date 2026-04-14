@@ -50,6 +50,16 @@ export class SourceMarketLinkService {
           ...(listingUrl ? { listingUrl } : {}),
         };
       }
+      case 'dmarket':
+        return {
+          ...(persistedListingUrl ? { marketUrl: persistedListingUrl } : {}),
+          ...(persistedListingUrl ? { listingUrl: persistedListingUrl } : {}),
+        };
+      case 'waxpeer':
+        return {
+          ...(persistedListingUrl ? { marketUrl: persistedListingUrl } : {}),
+          ...(persistedListingUrl ? { listingUrl: persistedListingUrl } : {}),
+        };
       case 'steam-snapshot': {
         const marketHashName =
           this.readMarketHashName(input.variantMetadata) ??

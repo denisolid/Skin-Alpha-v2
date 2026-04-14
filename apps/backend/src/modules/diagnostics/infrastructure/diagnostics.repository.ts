@@ -1,11 +1,16 @@
 import { JobRunStatus, type Prisma, type SyncStatus } from '@prisma/client';
+import { IngestionJobStatus, ListingStatus } from '@prisma/client';
 import { Inject, Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../../../infrastructure/prisma/prisma.service';
 import type {
   DiagnosticsOverlapCoverageRecord,
+  DiagnosticsCsFloatCoverageRecord,
   DiagnosticsHealthMetricWithSourceRecord,
   DiagnosticsJobRunRecord,
+  DiagnosticsLatestOpportunityRescanRecord,
+  DiagnosticsPendingSourceMappingRecord,
+  DiagnosticsRawPayloadEndpointRecord,
   DiagnosticsQueueStatusRecord,
   DiagnosticsRepository,
   DiagnosticsSourceEntityCountRecord,
@@ -13,8 +18,10 @@ import type {
   DiagnosticsSourceOverviewRecord,
   DiagnosticsSourcePairOverlapRecord,
   DiagnosticsSourceSyncStatusRecord,
+  DiagnosticsSourceTimestampRecord,
 } from '../domain/diagnostics.repository';
 import type { SourceAdapterKey } from '../../source-adapters/domain/source-adapter.types';
+import { UPDATE_MARKET_STATE_QUEUE_NAME } from '../../source-adapters/domain/source-ingestion.constants';
 
 @Injectable()
 export class DiagnosticsRepositoryAdapter implements DiagnosticsRepository {
@@ -79,6 +86,15 @@ export class DiagnosticsRepositoryAdapter implements DiagnosticsRepository {
             observedAt: 'desc',
           },
         },
+        rawPayloadArchives: {
+          take: 1,
+          select: {
+            observedAt: true,
+          },
+          orderBy: {
+            observedAt: 'desc',
+          },
+        },
       },
     });
 
@@ -101,6 +117,9 @@ export class DiagnosticsRepositoryAdapter implements DiagnosticsRepository {
       ),
       ...(source.jobRuns[0]
         ? { latestJobRun: this.toJobRunRecord(source.jobRuns[0]) }
+        : {}),
+      ...(source.rawPayloadArchives[0]?.observedAt
+        ? { latestRawPayloadObservedAt: source.rawPayloadArchives[0].observedAt }
         : {}),
       ...(source.marketStates[0]?.observedAt
         ? { latestMarketStateObservedAt: source.marketStates[0].observedAt }
@@ -215,6 +234,32 @@ export class DiagnosticsRepositoryAdapter implements DiagnosticsRepository {
     return this.mapGroupedSourceCounts(groups);
   }
 
+  async listRawPayloadArchiveCounts(): Promise<
+    readonly DiagnosticsSourceEntityCountRecord[]
+  > {
+    const groups = await this.prismaService.rawPayloadArchive.groupBy({
+      by: ['sourceId'],
+      _count: {
+        _all: true,
+      },
+    });
+
+    return this.mapGroupedSourceCounts(groups);
+  }
+
+  async listSourceMarketFactCounts(): Promise<
+    readonly DiagnosticsSourceEntityCountRecord[]
+  > {
+    const groups = await this.prismaService.sourceMarketFact.groupBy({
+      by: ['sourceId'],
+      _count: {
+        _all: true,
+      },
+    });
+
+    return this.mapGroupedSourceCounts(groups);
+  }
+
   async listMarketStateCounts(): Promise<
     readonly DiagnosticsSourceEntityCountRecord[]
   > {
@@ -226,6 +271,295 @@ export class DiagnosticsRepositoryAdapter implements DiagnosticsRepository {
     });
 
     return this.mapGroupedSourceCounts(groups);
+  }
+
+  async listPendingSourceMappingCounts(query?: {
+    readonly source?: SourceAdapterKey;
+    readonly unresolvedOnly?: boolean;
+  }): Promise<readonly DiagnosticsSourceEntityCountRecord[]> {
+    const groups = await this.prismaService.pendingSourceMapping.groupBy({
+      by: ['sourceId'],
+      where: {
+        ...(query?.source ? { source: { code: query.source } } : {}),
+        ...(query?.unresolvedOnly ? { resolvedAt: null } : {}),
+      },
+      _count: {
+        _all: true,
+      },
+    });
+
+    return this.mapGroupedSourceCounts(groups);
+  }
+
+  async listUsefulRawPayloadCounts(): Promise<
+    readonly DiagnosticsSourceEntityCountRecord[]
+  > {
+    const rows = await this.prismaService.$queryRaw<
+      {
+        sourceId: string;
+        sourceCode: string;
+        sourceName: string;
+        count: bigint | number;
+      }[]
+    >`
+      WITH useful_archives AS (
+        SELECT DISTINCT "sourceId", "rawPayloadArchiveId"
+        FROM "SourceEntityProvenance"
+        UNION
+        SELECT DISTINCT "sourceId", "rawPayloadArchiveId"
+        FROM "SourceMarketFact"
+        UNION
+        SELECT DISTINCT "sourceId", "rawPayloadArchiveId"
+        FROM "PendingSourceMapping"
+        UNION
+        SELECT DISTINCT "sourceId", "rawPayloadArchiveId"
+        FROM "MarketSnapshot"
+        WHERE "rawPayloadArchiveId" IS NOT NULL
+      )
+      SELECT
+        s.id AS "sourceId",
+        s.code AS "sourceCode",
+        s.name AS "sourceName",
+        COUNT(*) AS "count"
+      FROM useful_archives ua
+      JOIN "Source" s ON s.id = ua."sourceId"
+      GROUP BY s.id, s.code, s.name
+    `;
+
+    return rows.map((row) => ({
+      sourceId: row.sourceId,
+      sourceCode: row.sourceCode as SourceAdapterKey,
+      sourceName: row.sourceName,
+      count: this.normalizeCount(row.count),
+    }));
+  }
+
+  async listRecentRawPayloadArchiveCounts(
+    limitPerSource: number,
+  ): Promise<readonly DiagnosticsSourceEntityCountRecord[]> {
+    const rows = await this.prismaService.$queryRaw<
+      {
+        sourceId: string;
+        sourceCode: string;
+        sourceName: string;
+        count: bigint | number;
+      }[]
+    >`
+      WITH ranked_archives AS (
+        SELECT
+          r.id,
+          r."sourceId",
+          ROW_NUMBER() OVER (
+            PARTITION BY r."sourceId"
+            ORDER BY r."observedAt" DESC, r."archivedAt" DESC, r.id DESC
+          ) AS row_number
+        FROM "RawPayloadArchive" r
+      )
+      SELECT
+        s.id AS "sourceId",
+        s.code AS "sourceCode",
+        s.name AS "sourceName",
+        COUNT(*) AS "count"
+      FROM ranked_archives ra
+      JOIN "Source" s ON s.id = ra."sourceId"
+      WHERE ra.row_number <= ${limitPerSource}
+      GROUP BY s.id, s.code, s.name
+    `;
+
+    return rows.map((row) => ({
+      sourceId: row.sourceId,
+      sourceCode: row.sourceCode as SourceAdapterKey,
+      sourceName: row.sourceName,
+      count: this.normalizeCount(row.count),
+    }));
+  }
+
+  async listRecentUsefulRawPayloadCounts(
+    limitPerSource: number,
+  ): Promise<readonly DiagnosticsSourceEntityCountRecord[]> {
+    const rows = await this.prismaService.$queryRaw<
+      {
+        sourceId: string;
+        sourceCode: string;
+        sourceName: string;
+        count: bigint | number;
+      }[]
+    >`
+      WITH ranked_archives AS (
+        SELECT
+          r.id,
+          r."sourceId",
+          ROW_NUMBER() OVER (
+            PARTITION BY r."sourceId"
+            ORDER BY r."observedAt" DESC, r."archivedAt" DESC, r.id DESC
+          ) AS row_number
+        FROM "RawPayloadArchive" r
+      ),
+      recent_archives AS (
+        SELECT id, "sourceId"
+        FROM ranked_archives
+        WHERE row_number <= ${limitPerSource}
+      ),
+      useful_archives AS (
+        SELECT DISTINCT ra."sourceId", ra.id AS "rawPayloadArchiveId"
+        FROM recent_archives ra
+        JOIN "SourceEntityProvenance" sep
+          ON sep."rawPayloadArchiveId" = ra.id
+        UNION
+        SELECT DISTINCT ra."sourceId", ra.id AS "rawPayloadArchiveId"
+        FROM recent_archives ra
+        JOIN "SourceMarketFact" smf
+          ON smf."rawPayloadArchiveId" = ra.id
+        UNION
+        SELECT DISTINCT ra."sourceId", ra.id AS "rawPayloadArchiveId"
+        FROM recent_archives ra
+        JOIN "PendingSourceMapping" psm
+          ON psm."rawPayloadArchiveId" = ra.id
+        UNION
+        SELECT DISTINCT ra."sourceId", ra.id AS "rawPayloadArchiveId"
+        FROM recent_archives ra
+        JOIN "MarketSnapshot" ms
+          ON ms."rawPayloadArchiveId" = ra.id
+      )
+      SELECT
+        s.id AS "sourceId",
+        s.code AS "sourceCode",
+        s.name AS "sourceName",
+        COUNT(*) AS "count"
+      FROM useful_archives ua
+      JOIN "Source" s ON s.id = ua."sourceId"
+      GROUP BY s.id, s.code, s.name
+    `;
+
+    return rows.map((row) => ({
+      sourceId: row.sourceId,
+      sourceCode: row.sourceCode as SourceAdapterKey,
+      sourceName: row.sourceName,
+      count: this.normalizeCount(row.count),
+    }));
+  }
+
+  async listProjectionSkipCounts(): Promise<
+    readonly DiagnosticsSourceEntityCountRecord[]
+  > {
+    const rows = await this.prismaService.$queryRaw<
+      {
+        sourceId: string;
+        sourceCode: string;
+        sourceName: string;
+        count: bigint | number;
+      }[]
+    >`
+      SELECT
+        s.id AS "sourceId",
+        s.code AS "sourceCode",
+        s.name AS "sourceName",
+        COALESCE(
+          SUM(
+            CASE
+              WHEN shm.details ->> 'stage' = ${UPDATE_MARKET_STATE_QUEUE_NAME}
+                THEN COALESCE((shm.details ->> 'unchangedProjectionSkipCount')::bigint, 0)
+              ELSE 0
+            END
+          ),
+          0
+        ) AS "count"
+      FROM "Source" s
+      LEFT JOIN "SourceHealthMetric" shm
+        ON shm."sourceId" = s.id
+      GROUP BY s.id, s.code, s.name
+    `;
+
+    return rows.map((row) => ({
+      sourceId: row.sourceId,
+      sourceCode: row.sourceCode as SourceAdapterKey,
+      sourceName: row.sourceName,
+      count: this.normalizeCount(row.count),
+    }));
+  }
+
+  async listLatestNormalizedAtBySource(): Promise<
+    readonly DiagnosticsSourceTimestampRecord[]
+  > {
+    const groups = await this.prismaService.itemSourceFreshness.groupBy({
+      by: ['sourceId'],
+      where: {
+        lastNormalizedAt: {
+          not: null,
+        },
+      },
+      _max: {
+        lastNormalizedAt: true,
+      },
+    });
+
+    return this.mapGroupedSourceTimestamps(
+      groups
+        .map((group) =>
+          group._max.lastNormalizedAt
+            ? {
+                sourceId: group.sourceId,
+                timestamp: group._max.lastNormalizedAt,
+              }
+            : null,
+        )
+        .filter(
+          (group): group is { sourceId: string; timestamp: Date } =>
+            group !== null,
+        ),
+    );
+  }
+
+  async listLatestRawPayloadObservedAtByEndpoint(): Promise<
+    readonly DiagnosticsRawPayloadEndpointRecord[]
+  > {
+    const groups = await this.prismaService.rawPayloadArchive.groupBy({
+      by: ['sourceId', 'endpointName'],
+      _max: {
+        observedAt: true,
+      },
+    });
+
+    if (groups.length === 0) {
+      return [];
+    }
+
+    const sources = await this.prismaService.source.findMany({
+      where: {
+        id: {
+          in: [...new Set(groups.map((group) => group.sourceId))],
+        },
+      },
+      select: {
+        id: true,
+        code: true,
+        name: true,
+      },
+    });
+    const sourceById = new Map(
+      sources.map((source) => [source.id, source] as const),
+    );
+
+    return groups
+      .map((group) => {
+        const source = sourceById.get(group.sourceId);
+
+        if (!source || !group._max.observedAt) {
+          return null;
+        }
+
+        return {
+          sourceId: source.id,
+          sourceCode: source.code as SourceAdapterKey,
+          sourceName: source.name,
+          endpointName: group.endpointName,
+          latestObservedAt: group._max.observedAt,
+        } satisfies DiagnosticsRawPayloadEndpointRecord;
+      })
+      .filter(
+        (record): record is DiagnosticsRawPayloadEndpointRecord =>
+          record !== null,
+      );
   }
 
   async getOverlapCoverage(): Promise<DiagnosticsOverlapCoverageRecord> {
@@ -268,34 +602,72 @@ export class DiagnosticsRepositoryAdapter implements DiagnosticsRepository {
         leftSourceName: string;
         rightSourceCode: string;
         rightSourceName: string;
+        canonicalOverlapCount: bigint | number;
         pairableVariantCount: bigint | number;
+        blockedVariantCount: bigint | number;
+        overlapQualityScore: number | string;
       }[]
     >`
-      WITH variant_sources AS (
+      WITH canonical_overlap AS (
         SELECT
-          ms."itemVariantId",
-          s.id AS "sourceId",
-          s.code,
-          s.name
-        FROM "MarketState" ms
-        JOIN "Source" s ON s.id = ms."sourceId"
+          left_state."sourceId" AS "leftSourceId",
+          right_state."sourceId" AS "rightSourceId",
+          COUNT(DISTINCT left_state."itemVariantId") AS "canonicalOverlapCount"
+        FROM "MarketState" AS left_state
+        JOIN "MarketState" AS right_state
+          ON left_state."itemVariantId" = right_state."itemVariantId"
+         AND left_state."sourceId" < right_state."sourceId"
+        GROUP BY left_state."sourceId", right_state."sourceId"
+      ),
+      pairable_overlap AS (
+        SELECT
+          LEAST(o."buySourceId", o."sellSourceId") AS "leftSourceId",
+          GREATEST(o."buySourceId", o."sellSourceId") AS "rightSourceId",
+          COUNT(DISTINCT o."itemVariantId") AS "pairableVariantCount"
+        FROM "Opportunity" o
+        WHERE o.status = 'OPEN'
+          AND (o."expiresAt" IS NULL OR o."expiresAt" > NOW())
+        GROUP BY
+          LEAST(o."buySourceId", o."sellSourceId"),
+          GREATEST(o."buySourceId", o."sellSourceId")
       )
       SELECT
         left_source.code AS "leftSourceCode",
         left_source.name AS "leftSourceName",
         right_source.code AS "rightSourceCode",
         right_source.name AS "rightSourceName",
-        COUNT(DISTINCT left_source."itemVariantId") AS "pairableVariantCount"
-      FROM variant_sources AS left_source
-      JOIN variant_sources AS right_source
-        ON left_source."itemVariantId" = right_source."itemVariantId"
-       AND left_source."sourceId" < right_source."sourceId"
-      GROUP BY
-        left_source.code,
-        left_source.name,
-        right_source.code,
-        right_source.name
+        COALESCE(canonical_overlap."canonicalOverlapCount", 0) AS "canonicalOverlapCount",
+        COALESCE(pairable_overlap."pairableVariantCount", 0) AS "pairableVariantCount",
+        GREATEST(
+          0,
+          COALESCE(canonical_overlap."canonicalOverlapCount", 0) -
+            COALESCE(pairable_overlap."pairableVariantCount", 0)
+        ) AS "blockedVariantCount",
+        CASE
+          WHEN COALESCE(canonical_overlap."canonicalOverlapCount", 0) > 0
+            THEN ROUND(
+              COALESCE(pairable_overlap."pairableVariantCount", 0)::numeric /
+                canonical_overlap."canonicalOverlapCount"::numeric,
+              4
+            )
+          ELSE 0
+        END AS "overlapQualityScore"
+      FROM canonical_overlap
+      FULL OUTER JOIN pairable_overlap
+        ON pairable_overlap."leftSourceId" = canonical_overlap."leftSourceId"
+       AND pairable_overlap."rightSourceId" = canonical_overlap."rightSourceId"
+      JOIN "Source" AS left_source
+        ON left_source.id = COALESCE(
+          canonical_overlap."leftSourceId",
+          pairable_overlap."leftSourceId"
+        )
+      JOIN "Source" AS right_source
+        ON right_source.id = COALESCE(
+          canonical_overlap."rightSourceId",
+          pairable_overlap."rightSourceId"
+        )
       ORDER BY
+        "overlapQualityScore" DESC,
         "pairableVariantCount" DESC,
         "leftSourceCode" ASC,
         "rightSourceCode" ASC
@@ -306,8 +678,175 @@ export class DiagnosticsRepositoryAdapter implements DiagnosticsRepository {
       leftSourceName: row.leftSourceName,
       rightSourceCode: row.rightSourceCode as SourceAdapterKey,
       rightSourceName: row.rightSourceName,
+      canonicalOverlapCount: this.normalizeCount(row.canonicalOverlapCount),
       pairableVariantCount: this.normalizeCount(row.pairableVariantCount),
+      blockedVariantCount: this.normalizeCount(row.blockedVariantCount),
+      overlapQualityScore: Number(row.overlapQualityScore),
     }));
+  }
+
+  async findLatestOpportunityRescanRecord(): Promise<DiagnosticsLatestOpportunityRescanRecord | null> {
+    const jobRun = await this.prismaService.jobRun.findFirst({
+      where: {
+        queueName: 'jobs-opportunity-rescan',
+        status: JobRunStatus.SUCCEEDED,
+        finishedAt: {
+          not: null,
+        },
+      },
+      select: {
+        finishedAt: true,
+        result: true,
+      },
+      orderBy: {
+        finishedAt: 'desc',
+      },
+    });
+
+    if (!jobRun?.finishedAt) {
+      return null;
+    }
+
+    return {
+      completedAt: jobRun.finishedAt,
+      result: jobRun.result,
+    };
+  }
+
+  async getCsFloatCoverageMetrics(input: {
+    readonly hotVariantIds: readonly string[];
+    readonly recentDetailFetchLimit: number;
+  }): Promise<DiagnosticsCsFloatCoverageRecord> {
+    const sources = await this.prismaService.source.findMany({
+      where: {
+        code: {
+          in: ['skinport', 'csfloat'],
+        },
+      },
+      select: {
+        id: true,
+        code: true,
+      },
+    });
+    const skinportSourceId = sources.find(
+      (source) => source.code === 'skinport',
+    )?.id;
+    const csfloatSourceId = sources.find(
+      (source) => source.code === 'csfloat',
+    )?.id;
+
+    if (!skinportSourceId || !csfloatSourceId) {
+      return {
+        skinportTrackedVariantCount: 0,
+        csfloatTrackedVariantCount: 0,
+        overlapWithSkinportCount: 0,
+        csfloatOverlapEligibleVariantCount: 0,
+        csfloatActiveListingCount: 0,
+        hotVariantCount: input.hotVariantIds.length,
+        csfloatCoveredHotVariantCount: 0,
+        csfloatActiveListingsOnHotVariants: 0,
+        recentDetailFetchCount: 0,
+        recentUsefulDetailFetchCount: 0,
+      };
+    }
+
+    const [
+      skinportStates,
+      csfloatStates,
+      csfloatActiveListingCount,
+      csfloatCoveredHotVariantCount,
+      csfloatActiveListingsOnHotVariants,
+      recentDetailFetchJobs,
+    ] = await Promise.all([
+      this.prismaService.marketState.findMany({
+        where: {
+          sourceId: skinportSourceId,
+        },
+        select: {
+          itemVariantId: true,
+        },
+      }),
+      this.prismaService.marketState.findMany({
+        where: {
+          sourceId: csfloatSourceId,
+        },
+        select: {
+          itemVariantId: true,
+          listingCount: true,
+          lowestAskGross: true,
+        },
+      }),
+      this.prismaService.sourceListing.count({
+        where: {
+          sourceId: csfloatSourceId,
+          listingStatus: ListingStatus.ACTIVE,
+        },
+      }),
+      input.hotVariantIds.length > 0
+        ? this.prismaService.marketState.count({
+            where: {
+              sourceId: csfloatSourceId,
+              itemVariantId: {
+                in: [...input.hotVariantIds],
+              },
+            },
+          })
+        : Promise.resolve(0),
+      input.hotVariantIds.length > 0
+        ? this.prismaService.sourceListing.count({
+            where: {
+              sourceId: csfloatSourceId,
+              listingStatus: ListingStatus.ACTIVE,
+              itemVariantId: {
+                in: [...input.hotVariantIds],
+              },
+            },
+          })
+        : Promise.resolve(0),
+      this.prismaService.sourceFetchJob.findMany({
+        where: {
+          sourceId: csfloatSourceId,
+          queueName: 'csfloat-fetch-listing-detail',
+          status: IngestionJobStatus.SUCCEEDED,
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+        take: input.recentDetailFetchLimit,
+        select: {
+          normalizedCount: true,
+        },
+      }),
+    ]);
+
+    const skinportVariantIds = new Set(
+      skinportStates.map((state) => state.itemVariantId),
+    );
+    const overlapWithSkinportCount = csfloatStates.filter((state) =>
+      skinportVariantIds.has(state.itemVariantId),
+    ).length;
+    const csfloatOverlapEligibleVariantCount = csfloatStates.filter(
+      (state) =>
+        skinportVariantIds.has(state.itemVariantId) &&
+        Number(state.listingCount ?? 0) > 0 &&
+        state.lowestAskGross !== null,
+    ).length;
+    const recentUsefulDetailFetchCount = recentDetailFetchJobs.filter(
+      (job) => job.normalizedCount > 0,
+    ).length;
+
+    return {
+      skinportTrackedVariantCount: skinportVariantIds.size,
+      csfloatTrackedVariantCount: csfloatStates.length,
+      overlapWithSkinportCount,
+      csfloatOverlapEligibleVariantCount,
+      csfloatActiveListingCount,
+      hotVariantCount: input.hotVariantIds.length,
+      csfloatCoveredHotVariantCount,
+      csfloatActiveListingsOnHotVariants,
+      recentDetailFetchCount: recentDetailFetchJobs.length,
+      recentUsefulDetailFetchCount,
+    };
   }
 
   async listRecentHealthMetrics(query: {
@@ -425,6 +964,62 @@ export class DiagnosticsRepositoryAdapter implements DiagnosticsRepository {
     return syncStatuses.map((syncStatus) =>
       this.toSyncStatusRecord(syncStatus),
     );
+  }
+
+  async listRecentPendingSourceMappings(query: {
+    readonly source?: SourceAdapterKey;
+    readonly since?: Date;
+    readonly unresolvedOnly?: boolean;
+    readonly limit: number;
+  }): Promise<readonly DiagnosticsPendingSourceMappingRecord[]> {
+    const pendingMappings = await this.prismaService.pendingSourceMapping.findMany({
+      where: {
+        ...(query.source ? { source: { code: query.source } } : {}),
+        ...(query.since ? { observedAt: { gte: query.since } } : {}),
+        ...(query.unresolvedOnly ? { resolvedAt: null } : {}),
+      },
+      include: {
+        source: {
+          select: {
+            id: true,
+            code: true,
+            name: true,
+          },
+        },
+      },
+      orderBy: [{ observedAt: 'desc' }],
+      take: query.limit,
+    });
+
+    return pendingMappings.map((mapping) => ({
+      id: mapping.id,
+      sourceId: mapping.sourceId,
+      sourceCode: mapping.source.code as SourceAdapterKey,
+      sourceName: mapping.source.name,
+      endpointName: mapping.endpointName,
+      kind: mapping.kind,
+      sourceItemId: mapping.sourceItemId,
+      ...(mapping.title ? { title: mapping.title } : {}),
+      ...(mapping.normalizedTitle
+        ? { normalizedTitle: mapping.normalizedTitle }
+        : {}),
+      observedAt: mapping.observedAt,
+      normalizedAt: mapping.normalizedAt,
+      ...(mapping.resolvedAt ? { resolvedAt: mapping.resolvedAt } : {}),
+      ...(mapping.resolutionNote
+        ? { resolutionNote: mapping.resolutionNote }
+        : {}),
+      ...(mapping.variantHints &&
+      typeof mapping.variantHints === 'object' &&
+      !Array.isArray(mapping.variantHints)
+        ? { variantHints: mapping.variantHints as Record<string, unknown> }
+        : {}),
+      ...(mapping.metadata &&
+      typeof mapping.metadata === 'object' &&
+      !Array.isArray(mapping.metadata)
+        ? { metadata: mapping.metadata as Record<string, unknown> }
+        : {}),
+    }));
   }
 
   private toHealthMetricRecord(metric: {
@@ -622,9 +1217,64 @@ export class DiagnosticsRepositoryAdapter implements DiagnosticsRepository {
       );
   }
 
-  private normalizeCount(value: bigint | number | null | undefined): number {
+  private async mapGroupedSourceTimestamps(
+    groups: readonly {
+      readonly sourceId: string;
+      readonly timestamp: Date;
+    }[],
+  ): Promise<readonly DiagnosticsSourceTimestampRecord[]> {
+    if (groups.length === 0) {
+      return [];
+    }
+
+    const sources = await this.prismaService.source.findMany({
+      where: {
+        id: {
+          in: groups.map((group) => group.sourceId),
+        },
+      },
+      select: {
+        id: true,
+        code: true,
+        name: true,
+      },
+    });
+    const sourceById = new Map(
+      sources.map((source) => [source.id, source] as const),
+    );
+
+    return groups
+      .map((group) => {
+        const source = sourceById.get(group.sourceId);
+
+        if (!source) {
+          return null;
+        }
+
+        return {
+          sourceId: source.id,
+          sourceCode: source.code as SourceAdapterKey,
+          sourceName: source.name,
+          timestamp: group.timestamp,
+        } satisfies DiagnosticsSourceTimestampRecord;
+      })
+      .filter(
+        (record): record is DiagnosticsSourceTimestampRecord =>
+          record !== null,
+      );
+  }
+
+  private normalizeCount(
+    value: bigint | number | string | null | undefined,
+  ): number {
     if (typeof value === 'bigint') {
       return Number(value);
+    }
+
+    if (typeof value === 'string') {
+      const parsedValue = Number(value);
+
+      return Number.isFinite(parsedValue) ? parsedValue : 0;
     }
 
     return typeof value === 'number' ? value : 0;

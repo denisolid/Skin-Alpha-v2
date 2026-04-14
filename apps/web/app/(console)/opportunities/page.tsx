@@ -1,7 +1,13 @@
 import Link from 'next/link';
+import { Suspense } from 'react';
 
+import {
+  AdminRejectDiagnosticsFallback,
+  AdminRejectDiagnosticsSection,
+} from '../../components/admin-reject-diagnostics-section';
 import { OpportunityDetailPanel } from '../../components/opportunity-detail-panel';
 import { OpportunitiesTable } from '../../components/opportunities-table';
+import { createEmptyOpportunityFeedPage } from '../../lib/opportunity-feed-fallback';
 import {
   readNumberSearchParam,
   readSearchParam,
@@ -11,7 +17,12 @@ import {
   getCurrentSubscription,
   getOpportunityDetail,
   getOpportunityFeed,
+  getOpportunityRejectDiagnostics,
 } from '../../lib/server-api';
+import type {
+  OpportunityFullFeedItem,
+  OpportunityPublicFeedItem,
+} from '../../lib/types';
 
 interface OpportunitiesPageProps {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
@@ -28,8 +39,7 @@ function buildSearchString(
 
   for (const [key, value] of Object.entries(params)) {
     if (
-      key === 'selectedItemVariantId' ||
-      key === 'selectedSourcePair' ||
+      key === 'selectedOpportunityKey' ||
       value === undefined
     ) {
       continue;
@@ -78,49 +88,78 @@ export default async function OpportunitiesPage({
   const pageSize = readNumberSearchParam(params, 'pageSize') ?? 25;
   const sortBy = readSearchParam(params, 'sortBy') ?? 'expected_profit';
   const sortDirection = readSearchParam(params, 'sortDirection') ?? 'desc';
-  const selectedItemVariantId = readSearchParam(
+  const selectedOpportunityKey = readSearchParam(
     params,
-    'selectedItemVariantId',
+    'selectedOpportunityKey',
   );
-  const selectedSourcePair = readSearchParam(params, 'selectedSourcePair');
+  const showRejectDiagnostics =
+    readSearchParam(params, 'showRejectDiagnostics') === '1';
   const preservedQueryString = buildSearchString(params, {});
-
+  const feedQuery = {
+    ...(sourcePair ? { sourcePair } : {}),
+    ...(category ? { category } : {}),
+    ...(minProfit !== undefined ? { minProfit } : {}),
+    ...(minConfidence !== undefined ? { minConfidence } : {}),
+    ...(itemType ? { itemType } : {}),
+    ...(tier ? { tier } : {}),
+    page,
+    pageSize,
+    sortBy,
+    sortDirection,
+  };
+  let feedErrorMessage: string | null = null;
   const feed =
     currentUser && hasFullFeedAccess
       ? await getOpportunityFeed({
-          ...(sourcePair ? { sourcePair } : {}),
-          ...(category ? { category } : {}),
-          ...(minProfit !== undefined ? { minProfit } : {}),
-          ...(minConfidence !== undefined ? { minConfidence } : {}),
-          ...(itemType ? { itemType } : {}),
-          ...(tier ? { tier } : {}),
-          page,
-          pageSize,
-          sortBy,
-          sortDirection,
+          ...feedQuery,
           authenticated: true,
+        }).catch((error: unknown) => {
+          feedErrorMessage =
+            error instanceof Error
+              ? error.message
+              : 'Unable to load opportunities feed.';
+
+          return createEmptyOpportunityFeedPage<OpportunityFullFeedItem>({
+            ...feedQuery,
+          });
         })
-      : await getOpportunityFeed({
+      : await getOpportunityFeed(feedQuery).catch((error: unknown) => {
+          feedErrorMessage =
+            error instanceof Error
+              ? error.message
+              : 'Unable to load opportunities feed.';
+
+          return createEmptyOpportunityFeedPage<OpportunityPublicFeedItem>({
+            ...feedQuery,
+          });
+        });
+  const rejectDiagnosticsPromise =
+    currentUser?.role === 'ADMIN' &&
+    showRejectDiagnostics &&
+    !feedErrorMessage &&
+    feed.items.length === 0
+      ? getOpportunityRejectDiagnostics({
           ...(sourcePair ? { sourcePair } : {}),
           ...(category ? { category } : {}),
-          ...(minProfit !== undefined ? { minProfit } : {}),
-          ...(minConfidence !== undefined ? { minConfidence } : {}),
           ...(itemType ? { itemType } : {}),
           ...(tier ? { tier } : {}),
-          page,
-          pageSize,
+          page: 1,
+          pageSize: 8,
           sortBy,
           sortDirection,
-        });
-
+        }).catch(() => null)
+      : Promise.resolve(null);
+  let selectedDetailErrorMessage: string | null = null;
   const selectedDetail =
-    currentUser &&
-    hasFullFeedAccess &&
-    selectedItemVariantId &&
-    selectedSourcePair
+    currentUser && hasFullFeedAccess && selectedOpportunityKey
       ? await getOpportunityDetail({
-          itemVariantId: selectedItemVariantId,
-          sourcePair: selectedSourcePair,
+          opportunityKey: selectedOpportunityKey,
+        }).catch((error: unknown) => {
+          selectedDetailErrorMessage =
+            error instanceof Error
+              ? error.message
+              : 'Unable to load selected opportunity detail.';
+          return null;
         })
       : null;
 
@@ -146,9 +185,9 @@ export default async function OpportunitiesPage({
           <p>
             {currentUser
               ? hasFullFeedAccess
-                ? 'Authenticated view with full economics and detail access.'
-                : 'Signed in on the limited free tier. Detail routes and full economics require full access.'
-              : 'Public view with limited fields. Sign in for item detail, watchlists, and account tools.'}
+                ? 'Authenticated view with parser-backed economics and detail access. Source adapters fetch raw market data, normalization updates market state, and this feed filters the downstream opportunity set.'
+                : 'Signed in on the limited free tier. The parser still ingests full market data, but detail routes and full economics require full access.'
+              : 'Public view with limited fields. Sign in for item detail, watchlists, and parser-backed diagnostics.'}
           </p>
         </div>
         <div className="hero-actions">
@@ -288,24 +327,33 @@ export default async function OpportunitiesPage({
               </p>
             </div>
             <div className="badge-row">
+              <span className="badge">{feed.summary.tradable} tradable</span>
+              <span className="badge">
+                {feed.summary.referenceBacked} reference backed
+              </span>
               <span className="badge">{feed.summary.eligible} eligible</span>
               <span className="badge">
-                {feed.summary.nearEligible} near eligible
+                {feed.summary.nearEligibleTier} near eligible tier
               </span>
-              <span className="badge">
-                {feed.summary.riskyHighUpside} high upside
-              </span>
+              <span className="badge">{feed.summary.research} research</span>
             </div>
           </div>
+
+          {feedErrorMessage ? (
+            <div className="form-error">
+              {feedErrorMessage} The page is showing an empty fallback view
+              until the backend recovers.
+            </div>
+          ) : null}
 
           <OpportunitiesTable
             detailAccess={
               currentUser ? (hasFullFeedAccess ? 'full' : 'upgrade') : 'sign-in'
             }
+            diagnostics={feed.diagnostics}
             items={feed.items}
             queryString={preservedQueryString}
-            selectedItemVariantId={selectedItemVariantId}
-            selectedSourcePair={selectedSourcePair}
+            selectedOpportunityKey={selectedOpportunityKey}
           />
 
           <div className="pagination-bar">
@@ -335,18 +383,52 @@ export default async function OpportunitiesPage({
           </div>
         </section>
 
+        {currentUser?.role === 'ADMIN' && feed.items.length === 0 ? (
+          showRejectDiagnostics ? (
+            <Suspense fallback={<AdminRejectDiagnosticsFallback />}>
+              <AdminRejectDiagnosticsSection
+                rejectDiagnosticsPromise={rejectDiagnosticsPromise}
+              />
+            </Suspense>
+          ) : (
+            <section className="panel card">
+              <div className="stack-row">
+                <div>
+                  <h2>Blocked Pair Samples</h2>
+                  <p className="panel-subtitle">
+                    Rejected-pair diagnostics are available on demand so empty
+                    feed pages do not trigger a second backend scan by default.
+                  </p>
+                </div>
+                <Link
+                  className="button-ghost"
+                  href={`/opportunities?${buildSearchString(params, {
+                    page: 1,
+                    showRejectDiagnostics: 1,
+                  })}`}
+                >
+                  Load Blocked Pair Samples
+                </Link>
+              </div>
+              <div className="callout">
+                Empty admin feeds no longer auto-fetch reject diagnostics during
+                the initial page render.
+              </div>
+            </section>
+          )
+        ) : null}
+
         <aside className="panel card">
           {selectedDetail ? (
             <OpportunityDetailPanel compact item={selectedDetail} />
-          ) : selectedItemVariantId &&
-            selectedSourcePair &&
-            currentUser &&
-            !hasFullFeedAccess ? (
+          ) : selectedDetailErrorMessage ? (
+            <div className="form-error">{selectedDetailErrorMessage}</div>
+          ) : selectedOpportunityKey && currentUser && !hasFullFeedAccess ? (
             <div className="callout">
               This account is on the limited feed. Upgrade access to open the
               selected opportunity detail panel.
             </div>
-          ) : selectedItemVariantId && selectedSourcePair && !currentUser ? (
+          ) : selectedOpportunityKey && !currentUser ? (
             <div className="callout">
               Sign in to inspect the selected row in the detail panel and access
               the dedicated opportunity detail page.

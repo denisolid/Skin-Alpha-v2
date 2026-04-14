@@ -35,6 +35,16 @@ export const OPPORTUNITY_SOURCE_EXECUTION_POLICIES: Readonly<
     sellFeeRate: 0.02,
     askExitDiscountRate: 0.03,
   },
+  dmarket: {
+    buyFeeRate: 0,
+    sellFeeRate: 0.1,
+    askExitDiscountRate: 0.035,
+  },
+  waxpeer: {
+    buyFeeRate: 0,
+    sellFeeRate: 0.1,
+    askExitDiscountRate: 0.035,
+  },
   bitskins: {
     buyFeeRate: 0,
     sellFeeRate: 0.1,

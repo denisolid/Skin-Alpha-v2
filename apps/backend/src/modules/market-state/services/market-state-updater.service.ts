@@ -12,6 +12,10 @@ import {
   type MarketStateWriteRepository,
 } from '../domain/market-state-write.repository';
 import type { MarketStateUpdateResultDto } from '../dto/market-state-update-result.dto';
+import { mapWithConcurrencyLimit } from '../../shared/utils/async.util';
+import type { SourceAdapterKey } from '../../source-adapters/domain/source-adapter.types';
+
+const MARKET_STATE_UPDATE_CONCURRENCY_LIMIT = 4;
 
 @Injectable()
 export class MarketStateUpdaterService {
@@ -26,6 +30,124 @@ export class MarketStateUpdaterService {
     input: UpdateLatestMarketStateBatchInput,
   ): Promise<MarketStateUpdateResultDto> {
     return this.updateLatestStateBatch(input);
+  }
+
+  async refreshLatestStateHeartbeat(input: {
+    readonly source: UpdateLatestMarketStateBatchInput['source'];
+    readonly equivalentRawPayloadArchiveId: string;
+    readonly observedAt: Date;
+    readonly rawPayloadArchiveId?: string;
+  }): Promise<number> {
+    const source = await this.marketStateWriteRepository.findSourceByCode(
+      input.source,
+    );
+
+    if (!source) {
+      throw new NotFoundException(
+        `Source '${input.source}' was not found for market-state freshness refresh.`,
+      );
+    }
+
+    const refreshedStates =
+      await this.marketStateWriteRepository.refreshLatestStateHeartbeat({
+        sourceId: source.id,
+        sourceCode: source.code,
+        equivalentRawPayloadArchiveId: input.equivalentRawPayloadArchiveId,
+        observedAt: input.observedAt,
+      });
+
+    if (refreshedStates.length === 0) {
+      return 0;
+    }
+
+    const changedEvents = refreshedStates
+      .filter(
+        (
+          state,
+        ): state is typeof state & {
+          readonly latestSnapshotId: string;
+        } => state.latestSnapshotId !== null,
+      )
+      .map((state) => ({
+        source: state.sourceCode,
+        marketStateId: state.marketStateId,
+        latestSnapshotId: state.latestSnapshotId,
+        canonicalItemId: state.canonicalItemId,
+        itemVariantId: state.itemVariantId,
+        observedAt: state.observedAt,
+        ...(input.rawPayloadArchiveId
+          ? { rawPayloadArchiveId: input.rawPayloadArchiveId }
+          : {}),
+      }));
+
+    if (changedEvents.length > 0) {
+      await this.marketStateChangeEmitter.emitChanged(changedEvents);
+    }
+
+    return refreshedStates.length;
+  }
+
+  async refreshLatestStateHeartbeatForVariants(input: {
+    readonly source: SourceAdapterKey;
+    readonly itemVariantIds: readonly string[];
+    readonly observedAt: Date;
+    readonly rawPayloadArchiveId?: string;
+  }): Promise<number> {
+    const uniqueItemVariantIds = [...new Set(input.itemVariantIds)];
+
+    if (uniqueItemVariantIds.length === 0) {
+      return 0;
+    }
+
+    const source = await this.marketStateWriteRepository.findSourceByCode(
+      input.source,
+    );
+
+    if (!source) {
+      throw new NotFoundException(
+        `Source '${input.source}' was not found for market-state freshness refresh.`,
+      );
+    }
+
+    const refreshedStates =
+      await this.marketStateWriteRepository.refreshLatestStateHeartbeatForVariants(
+        {
+          sourceId: source.id,
+          sourceCode: source.code,
+          itemVariantIds: uniqueItemVariantIds,
+          observedAt: input.observedAt,
+        },
+      );
+
+    if (refreshedStates.length === 0) {
+      return 0;
+    }
+
+    const changedEvents = refreshedStates
+      .filter(
+        (
+          state,
+        ): state is typeof state & {
+          readonly latestSnapshotId: string;
+        } => state.latestSnapshotId !== null,
+      )
+      .map((state) => ({
+        source: state.sourceCode,
+        marketStateId: state.marketStateId,
+        latestSnapshotId: state.latestSnapshotId,
+        canonicalItemId: state.canonicalItemId,
+        itemVariantId: state.itemVariantId,
+        observedAt: state.observedAt,
+        ...(input.rawPayloadArchiveId
+          ? { rawPayloadArchiveId: input.rawPayloadArchiveId }
+          : {}),
+      }));
+
+    if (changedEvents.length > 0) {
+      await this.marketStateChangeEmitter.emitChanged(changedEvents);
+    }
+
+    return refreshedStates.length;
   }
 
   async updateLatestStateBatch(
@@ -44,16 +166,24 @@ export class MarketStateUpdaterService {
     let snapshotCount = 0;
     let upsertedStateCount = 0;
     let skippedCount = 0;
+    let unchangedProjectionSkipCount = 0;
     const changedEvents: MarketStateChangedEvent[] = [];
 
-    for (const marketState of input.marketStates) {
-      if (!marketState.canonicalItemId || !marketState.itemVariantId) {
-        skippedCount += 1;
-        continue;
-      }
+    const projections = await mapWithConcurrencyLimit(
+      input.marketStates,
+      MARKET_STATE_UPDATE_CONCURRENCY_LIMIT,
+      async (marketState) => {
+        if (!marketState.canonicalItemId || !marketState.itemVariantId) {
+          return null;
+        }
 
-      const projection =
-        await this.marketStateWriteRepository.appendSnapshotAndProjectLatestState(
+        const capturedAt = this.requireCapturedAt(
+          marketState.capturedAt,
+          input.source,
+          marketState.itemVariantId,
+        );
+
+        return this.marketStateWriteRepository.appendSnapshotAndProjectLatestState(
           {
             sourceId: source.id,
             sourceCode: source.code,
@@ -110,12 +240,25 @@ export class MarketStateUpdaterService {
                   ),
                 }
               : {}),
-            observedAt: marketState.capturedAt,
+            observedAt: capturedAt,
           },
         );
+      },
+    );
 
-      snapshotCount += 1;
+    for (const projection of projections) {
+      if (!projection) {
+        skippedCount += 1;
+        continue;
+      }
+
+      if (projection.snapshotCreated) {
+        snapshotCount += 1;
+      }
       upsertedStateCount += 1;
+      if (projection.unchangedProjectionSkipped) {
+        unchangedProjectionSkipCount += 1;
+      }
       changedEvents.push({
         source: projection.sourceCode,
         marketStateId: projection.marketStateId,
@@ -139,7 +282,22 @@ export class MarketStateUpdaterService {
       snapshotCount,
       upsertedStateCount,
       skippedCount,
+      unchangedProjectionSkipCount,
     };
+  }
+
+  private requireCapturedAt(
+    capturedAt: unknown,
+    source: UpdateLatestMarketStateBatchInput['source'],
+    itemVariantId: string,
+  ): Date {
+    if (capturedAt instanceof Date && !Number.isNaN(capturedAt.getTime())) {
+      return capturedAt;
+    }
+
+    throw new TypeError(
+      `Invalid capturedAt for ${source} market state projection (${itemVariantId}). Expected a valid Date instance before repository write.`,
+    );
   }
 
   private normalizeCurrencyCode(currency: string): string {

@@ -1,38 +1,116 @@
 import Link from 'next/link';
+import { Suspense } from 'react';
 
 import { AdminMarketStartupPanel } from '../../components/admin-market-startup-panel';
+import {
+  AdminSourceOperationalSummaryFallback,
+  AdminSourceOperationalSummarySection,
+} from '../../components/admin-source-operational-summary-section';
 import { OpportunitiesTable } from '../../components/opportunities-table';
-import { formatCurrency, formatScore } from '../../lib/format';
+import {
+  formatCurrency,
+  formatScore,
+} from '../../lib/format';
+import { createEmptyOpportunityFeedPage } from '../../lib/opportunity-feed-fallback';
 import {
   getCurrentSubscription,
   getOpportunityFeed,
+  getSourceOperationalSummary,
   getWatchlists,
   requireCurrentUser,
 } from '../../lib/server-api';
+import { readSearchParam } from '../../lib/search-params';
+import type {
+  OpportunityFullFeedItem,
+  OpportunityPublicFeedItem,
+} from '../../lib/types';
 
-export default async function DashboardPage() {
+interface DashboardPageProps {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+}
+
+export default async function DashboardPage({
+  searchParams,
+}: DashboardPageProps) {
+  const params = searchParams ? await searchParams : {};
   const currentUser = await requireCurrentUser();
-  const [currentSubscription, watchlists] = await Promise.all([
-    getCurrentSubscription(),
-    getWatchlists(),
+  const currentSubscriptionPromise = getCurrentSubscription();
+  const watchlistsPromise = getWatchlists();
+  const showSourceSummary = readSearchParam(params, 'showSourceSummary') === '1';
+  const sourceSummaryPromise =
+    currentUser.role === 'ADMIN' && showSourceSummary
+      ? getSourceOperationalSummary()
+      : Promise.resolve(null);
+  let feedErrorMessage: string | null = null;
+  const feedPromise =
+    currentUser.role === 'ADMIN'
+      ? getOpportunityFeed({
+          authenticated: true,
+          page: 1,
+          pageSize: 8,
+          sortBy: 'expected_profit',
+          sortDirection: 'desc',
+        }).catch((error: unknown) => {
+          feedErrorMessage =
+            error instanceof Error
+                ? error.message
+                : 'Unable to load recent opportunities.';
+
+          return createEmptyOpportunityFeedPage<OpportunityFullFeedItem>({
+            page: 1,
+            pageSize: 8,
+            sortBy: 'expected_profit',
+            sortDirection: 'desc',
+          });
+        })
+      : currentSubscriptionPromise.then((currentSubscription) =>
+          currentSubscription?.entitlements.fullFeed
+            ? getOpportunityFeed({
+                authenticated: true,
+                page: 1,
+                pageSize: 8,
+                sortBy: 'expected_profit',
+                sortDirection: 'desc',
+              }).catch((error: unknown) => {
+                feedErrorMessage =
+                  error instanceof Error
+                  ? error.message
+                    : 'Unable to load recent opportunities.';
+
+                return createEmptyOpportunityFeedPage<OpportunityFullFeedItem>({
+                  page: 1,
+                  pageSize: 8,
+                  sortBy: 'expected_profit',
+                  sortDirection: 'desc',
+                });
+              })
+            : getOpportunityFeed({
+                page: 1,
+                pageSize: 8,
+                sortBy: 'expected_profit',
+                sortDirection: 'desc',
+              }).catch((error: unknown) => {
+                feedErrorMessage =
+                  error instanceof Error
+                  ? error.message
+                    : 'Unable to load recent opportunities.';
+
+                return createEmptyOpportunityFeedPage<OpportunityPublicFeedItem>({
+                  page: 1,
+                  pageSize: 8,
+                  sortBy: 'expected_profit',
+                  sortDirection: 'desc',
+                });
+              }),
+        );
+  const [currentSubscription, watchlists, feed] = await Promise.all([
+    currentSubscriptionPromise,
+    watchlistsPromise,
+    feedPromise,
   ]);
   const hasFullFeedAccess =
     currentUser.role === 'ADMIN' ||
     Boolean(currentSubscription?.entitlements.fullFeed);
-  const feed = hasFullFeedAccess
-    ? await getOpportunityFeed({
-        authenticated: true,
-        page: 1,
-        pageSize: 8,
-        sortBy: 'expected_profit',
-        sortDirection: 'desc',
-      })
-    : await getOpportunityFeed({
-        page: 1,
-        pageSize: 8,
-        sortBy: 'expected_profit',
-        sortDirection: 'desc',
-      });
 
   const topOpportunity = feed.items[0];
   const watchlistCount = watchlists?.watchlists.length ?? 0;
@@ -75,10 +153,10 @@ export default async function DashboardPage() {
           <span className="muted">Current high-confidence opportunities.</span>
         </article>
         <article className="panel card metric-card">
-          <span className="metric-label">Risky High Upside</span>
-          <strong>{feed.summary.riskyHighUpside}</strong>
+          <span className="metric-label">Tradable Tier</span>
+          <strong>{feed.summary.tradable}</strong>
           <span className="muted">
-            Spread-rich setups with elevated penalties.
+            Opportunities that passed strict tradable matching.
           </span>
         </article>
         <article className="panel card metric-card">
@@ -107,6 +185,35 @@ export default async function DashboardPage() {
 
       <AdminMarketStartupPanel user={currentUser} />
 
+      {currentUser.role === 'ADMIN' ? (
+        showSourceSummary ? (
+          <Suspense fallback={<AdminSourceOperationalSummaryFallback />}>
+            <AdminSourceOperationalSummarySection
+              sourceSummaryPromise={sourceSummaryPromise}
+            />
+          </Suspense>
+        ) : (
+          <section className="panel card">
+            <div className="stack-row">
+              <div>
+                <h2>Parser Slice</h2>
+                <p className="panel-subtitle">
+                  Source operational diagnostics are available on demand so they
+                  do not compete with the main feed during first paint.
+                </p>
+              </div>
+              <Link className="button-ghost" href="/dashboard?showSourceSummary=1">
+                Load Parser Diagnostics
+              </Link>
+            </div>
+            <div className="callout">
+              Heavy diagnostics are paused on initial dashboard load while the
+              read path is being stabilized.
+            </div>
+          </section>
+        )
+      ) : null}
+
       <section className="page-grid-two">
         <article className="panel card">
           <div className="stack-row">
@@ -119,8 +226,15 @@ export default async function DashboardPage() {
               </p>
             </div>
           </div>
+          {feedErrorMessage ? (
+            <div className="form-error">
+              {feedErrorMessage} The dashboard is showing an empty fallback
+              feed until the backend request succeeds again.
+            </div>
+          ) : null}
           <OpportunitiesTable
             detailAccess={hasFullFeedAccess ? 'full' : 'upgrade'}
+            diagnostics={feed.diagnostics}
             items={feed.items}
           />
         </article>

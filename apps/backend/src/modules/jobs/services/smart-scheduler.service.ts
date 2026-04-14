@@ -4,9 +4,14 @@ import { Inject, Injectable } from '@nestjs/common';
 import { AppConfigService } from '../../../infrastructure/config/app-config.service';
 import { AppLoggerService } from '../../../infrastructure/logging/app-logger.service';
 import { PrismaService } from '../../../infrastructure/prisma/prisma.service';
+import { ReadPathDegradationService } from '../../../infrastructure/redis/read-path-degradation.service';
 import type { SourceAdapter } from '../../source-adapters/domain/source-adapter.interface';
 import { SOURCE_ADAPTERS } from '../../source-adapters/domain/source-adapter.constants';
 import type { SourceAdapterKey } from '../../source-adapters/domain/source-adapter.types';
+import type { SourceSchedulerContract } from '../../source-adapters/application/source-scheduler.contract';
+import { SOURCE_SCHEDULER } from '../../source-adapters/domain/source-adapter.constants';
+import { SourceAntiBanSchedulerService } from '../../source-adapters/services/source-anti-ban-scheduler.service';
+import { SourceHealthRecoveryService } from '../../source-adapters/services/source-health-recovery.service';
 import { SourceOperationsService } from '../../source-adapters/services/source-operations.service';
 import { SourceSyncDispatchService } from '../../source-adapters/services/source-sync-dispatch.service';
 import { ScannerUniverseService } from '../../opportunities/services/scanner-universe.service';
@@ -27,6 +32,7 @@ const SCHEDULER_TICK_LOCK_TTL_MS = 55_000;
 const SOURCE_SCHEDULE_LOCK_TTL_MS = 90_000;
 const MAINTENANCE_SCHEDULE_LOCK_TTL_MS = 5 * 60 * 1000;
 const HOT_UNIVERSE_RESCAN_LIMIT = 80;
+const OPPORTUNITY_RESCAN_EMERGENCY_CHANGED_STATES_THRESHOLD = 20_000;
 
 @Injectable()
 export class SmartSchedulerService {
@@ -41,8 +47,14 @@ export class SmartSchedulerService {
     private readonly prismaService: PrismaService,
     @Inject(SOURCE_ADAPTERS)
     adapters: readonly SourceAdapter[],
+    @Inject(SOURCE_SCHEDULER)
+    private readonly sourceScheduler: SourceSchedulerContract,
     @Inject(SourceOperationsService)
     private readonly sourceOperationsService: SourceOperationsService,
+    @Inject(SourceHealthRecoveryService)
+    private readonly sourceHealthRecoveryService: SourceHealthRecoveryService,
+    @Inject(SourceAntiBanSchedulerService)
+    private readonly sourceAntiBanSchedulerService: SourceAntiBanSchedulerService,
     @Inject(SourceSyncDispatchService)
     private readonly sourceSyncDispatchService: SourceSyncDispatchService,
     @Inject(JobRunService)
@@ -51,6 +63,8 @@ export class SmartSchedulerService {
     private readonly jobsMaintenanceDispatchService: JobsMaintenanceDispatchService,
     @Inject(SchedulerLockService)
     private readonly schedulerLockService: SchedulerLockService,
+    @Inject(ReadPathDegradationService)
+    private readonly readPathDegradationService: ReadPathDegradationService,
     @Inject(ScannerUniverseService)
     private readonly scannerUniverseService: ScannerUniverseService,
   ) {
@@ -59,7 +73,7 @@ export class SmartSchedulerService {
     );
   }
 
-  @Cron(CronExpression.EVERY_MINUTE)
+  @Cron(CronExpression.EVERY_5_MINUTES)
   async runTick(): Promise<void> {
     if (!this.configService.schedulerEnabled) {
       return;
@@ -132,6 +146,32 @@ export class SmartSchedulerService {
       adapter.getHealth(),
       adapter.getRateLimitState(),
     ]);
+    const runtimeState = await this.sourceHealthRecoveryService.assessAndApply({
+      source: plan.source,
+      health,
+      rateLimitState,
+    });
+
+    if (runtimeState.mode === 'disabled' || runtimeState.mode === 'cooldown') {
+      this.logSourceSkip(
+        plan.source,
+        `runtime_guard_${runtimeState.mode}${runtimeState.reason ? ` (${runtimeState.reason})` : ''}`,
+      );
+      return;
+    }
+
+    const scheduleDecision = await this.sourceScheduler.decide({
+      adapter: adapter.descriptor,
+      health,
+      rateLimitState,
+      trigger: 'scheduled',
+      requestedAt: now,
+    });
+
+    if (!scheduleDecision.shouldRun) {
+      this.logSourceSkip(plan.source, scheduleDecision.reason);
+      return;
+    }
 
     if (
       rateLimitState.status === 'cooldown' ||
@@ -155,8 +195,10 @@ export class SmartSchedulerService {
     }
 
     const effectiveMinIntervalMs = this.resolveEffectiveIntervalMs(
+      plan.source,
       plan.minIntervalMs,
       health.status,
+      runtimeState.mode,
     );
 
     if (
@@ -279,6 +321,16 @@ export class SmartSchedulerService {
       return;
     }
 
+    const readPathDegradation = await this.readPathDegradationService.inspect();
+
+    if (readPathDegradation.held) {
+      this.logger.warn(
+        `Scheduler skipped opportunity rescan: read_path_degraded${readPathDegradation.state?.reason ? ` (${readPathDegradation.state.reason})` : ''}.`,
+        SmartSchedulerService.name,
+      );
+      return;
+    }
+
     const lastSuccessfulJob = await this.jobRunService.getLatestSuccessfulJob(
       OPPORTUNITY_RESCAN_QUEUE_NAME,
     );
@@ -301,6 +353,24 @@ export class SmartSchedulerService {
     const updatedHotItemCount = await this.countUpdatedHotTierItemsSince(
       lastSuccessfulJob?.finishedAt,
     );
+
+    if (
+      changedStateCount >=
+      OPPORTUNITY_RESCAN_EMERGENCY_CHANGED_STATES_THRESHOLD
+    ) {
+      await this.readPathDegradationService.trip({
+        reason: 'opportunity_rescan_overwhelming_delta',
+        details: {
+          changedStateCount,
+          updatedHotItemCount,
+        },
+      });
+      this.logger.warn(
+        `Scheduler skipped opportunity rescan: overwhelming_changed_states (changed_states=${changedStateCount}, hot_updates=${updatedHotItemCount}).`,
+        SmartSchedulerService.name,
+      );
+      return;
+    }
 
     if (
       changedStateCount <
@@ -391,22 +461,30 @@ export class SmartSchedulerService {
   }
 
   private resolveEffectiveIntervalMs(
+    source: SourceAdapterKey,
     baseIntervalMs: number,
     healthStatus: 'unknown' | 'healthy' | 'degraded' | 'down',
+    runtimeMode: 'active' | 'degraded' | 'cooldown' | 'disabled',
   ): number {
-    if (healthStatus === 'down') {
-      return Math.round(
-        baseIntervalMs * this.configService.schedulerDownIntervalMultiplier,
-      );
-    }
+    const baseWithHealthMultiplier =
+      healthStatus === 'down'
+        ? Math.round(
+            baseIntervalMs *
+              this.configService.schedulerDownIntervalMultiplier,
+          )
+        : healthStatus === 'degraded'
+          ? Math.round(
+              baseIntervalMs *
+                this.configService.schedulerDegradedIntervalMultiplier,
+            )
+          : baseIntervalMs;
 
-    if (healthStatus === 'degraded') {
-      return Math.round(
-        baseIntervalMs * this.configService.schedulerDegradedIntervalMultiplier,
-      );
-    }
-
-    return baseIntervalMs;
+    return this.sourceAntiBanSchedulerService.resolveInterval({
+      source,
+      baseIntervalMs: baseWithHealthMultiplier,
+      healthStatus,
+      runtimeMode,
+    });
   }
 
   private getSourcePlans(): readonly SourceSchedulePlan[] {
@@ -414,6 +492,14 @@ export class SmartSchedulerService {
       {
         source: 'csfloat',
         minIntervalMs: this.configService.schedulerCsFloatMinIntervalMs,
+      },
+      {
+        source: 'dmarket',
+        minIntervalMs: this.configService.schedulerDMarketMinIntervalMs,
+      },
+      {
+        source: 'waxpeer',
+        minIntervalMs: this.configService.schedulerWaxpeerMinIntervalMs,
       },
       {
         source: 'steam-snapshot',

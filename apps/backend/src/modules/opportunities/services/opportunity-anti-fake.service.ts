@@ -1,6 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { ItemCategory } from '@prisma/client';
 
+import { CatalogAliasNormalizationService } from '../../catalog/services/catalog-alias-normalization.service';
 import type {
   MergedMarketMatrixDto,
   MergedMarketMatrixRowDto,
@@ -54,6 +55,12 @@ const OUTLIER_REASON_CODES = [
 
 @Injectable()
 export class OpportunityAntiFakeService {
+  constructor(
+    @Optional()
+    @Inject(CatalogAliasNormalizationService)
+    private readonly aliasNormalizationService: CatalogAliasNormalizationService = new CatalogAliasNormalizationService(),
+  ) {}
+
   assess(input: OpportunityAntiFakeInput): AntiFakeAssessment {
     const reasonCodes = new Set<OpportunityReasonCode>();
     const rows = [input.buyRow, input.sellRow] as const;
@@ -330,9 +337,18 @@ export class OpportunityAntiFakeService {
     ) {
       reasonCodes.add('UNKNOWN_FLOAT_PREMIUM');
       risk += this.getCategoryWeight(input.matrix.category, {
-        light: 0.02,
-        defaultValue: 0.1,
-        heavy: 0.07,
+        light:
+          input.matrix.variantIdentity.floatSensitivity === 'required'
+            ? 0.04
+            : 0.02,
+        defaultValue:
+          input.matrix.variantIdentity.floatSensitivity === 'required'
+            ? 0.14
+            : 0.1,
+        heavy:
+          input.matrix.variantIdentity.floatSensitivity === 'required'
+            ? 0.1
+            : 0.07,
       });
     }
 
@@ -343,9 +359,18 @@ export class OpportunityAntiFakeService {
     ) {
       reasonCodes.add('UNKNOWN_PATTERN_PREMIUM');
       risk += this.getCategoryWeight(input.matrix.category, {
-        light: 0.03,
-        defaultValue: 0.09,
-        heavy: 0.12,
+        light:
+          input.matrix.variantIdentity.patternSensitivity === 'required'
+            ? 0.05
+            : 0.03,
+        defaultValue:
+          input.matrix.variantIdentity.patternSensitivity === 'required'
+            ? 0.12
+            : 0.09,
+        heavy:
+          input.matrix.variantIdentity.patternSensitivity === 'required'
+            ? 0.16
+            : 0.12,
       });
     }
 
@@ -572,7 +597,10 @@ export class OpportunityAntiFakeService {
   }
 
   private resolveExterior(row: MergedMarketMatrixRowDto): string | undefined {
-    const explicitExterior = this.normalizeText(row.identity?.condition);
+    const explicitExterior = this.normalizeText(
+      this.aliasNormalizationService.normalizeExterior(row.identity?.condition) ??
+        row.identity?.condition,
+    );
 
     if (explicitExterior) {
       return explicitExterior;
@@ -584,9 +612,9 @@ export class OpportunityAntiFakeService {
       return undefined;
     }
 
-    const exteriorMatch = title.match(/\(([^)]+)\)$/u);
-
-    return this.normalizeText(exteriorMatch?.[1]);
+    return this.normalizeText(
+      this.aliasNormalizationService.extractExteriorFromTitle(title),
+    );
   }
 
   private resolvePhase(row: MergedMarketMatrixRowDto): string | undefined {
@@ -600,28 +628,9 @@ export class OpportunityAntiFakeService {
   }
 
   private extractPhaseFromText(value?: string): string | undefined {
-    const normalizedValue = this.normalizeText(value);
+    const phaseLabel = this.aliasNormalizationService.normalizePhaseHint(value);
 
-    if (!normalizedValue) {
-      return undefined;
-    }
-
-    for (const phase of [
-      'phase 1',
-      'phase 2',
-      'phase 3',
-      'phase 4',
-      'ruby',
-      'sapphire',
-      'black pearl',
-      'emerald',
-    ] as const) {
-      if (normalizedValue.includes(phase)) {
-        return phase;
-      }
-    }
-
-    return undefined;
+    return phaseLabel ? this.normalizeText(phaseLabel) : undefined;
   }
 
   private isTitleAligned(title: string, expectedTitle: string): boolean {
@@ -639,7 +648,9 @@ export class OpportunityAntiFakeService {
   }
 
   private normalizePhase(value?: string): string | undefined {
-    return this.normalizeText(value);
+    const phaseLabel = this.aliasNormalizationService.normalizePhaseHint(value);
+
+    return phaseLabel ? this.normalizeText(phaseLabel) : this.normalizeText(value);
   }
 
   private normalizeText(value?: string): string | undefined {

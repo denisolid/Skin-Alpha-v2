@@ -4,9 +4,20 @@ import { Inject, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../../infrastructure/prisma/prisma.service';
 import type { OpportunityEvaluationDto } from '../dto/opportunity-engine.dto';
 import type { OpportunityRescanResultDto } from '../dto/opportunity-rescan-result.dto';
+import type {
+  OpportunityBlockerReason,
+  OpportunityReasonCode,
+} from '../domain/opportunity-engine.model';
 import { OpportunityEngineService } from './opportunity-engine.service';
 
 const OPPORTUNITY_RESCAN_MAX_PAIRS = 64;
+const OPPORTUNITY_RESCAN_TOP_REASON_LIMIT = 10;
+const MATERIALIZED_OPPORTUNITY_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_BOUNDED_OPPORTUNITY_RESCAN_VARIANTS = 1_000;
+
+interface OpportunityRescanOptions {
+  readonly variantLimit?: number;
+}
 
 @Injectable()
 export class OpportunityRescanService {
@@ -17,9 +28,17 @@ export class OpportunityRescanService {
     private readonly opportunityEngineService: OpportunityEngineService,
   ) {}
 
-  async rescanAndPersist(): Promise<OpportunityRescanResultDto> {
+  async rescanAndPersist(
+    options: OpportunityRescanOptions = {},
+  ): Promise<OpportunityRescanResultDto> {
     const generatedAt = new Date();
+    const variantLimit = this.normalizeVariantLimit(options.variantLimit);
     const itemVariants = await this.prismaService.itemVariant.findMany({
+      where: {
+        marketStates: {
+          some: {},
+        },
+      },
       select: {
         id: true,
       },
@@ -31,17 +50,22 @@ export class OpportunityRescanService {
           sortOrder: 'asc',
         },
       ],
+      ...(variantLimit ? { take: variantLimit } : {}),
     });
-    const variantResults = await Promise.all(
-      itemVariants.map((itemVariant) =>
-        this.opportunityEngineService.evaluateVariant(itemVariant.id, {
-          includeRejected: false,
-          maxPairs: OPPORTUNITY_RESCAN_MAX_PAIRS,
-        }),
-      ),
-    );
-    const materializableEvaluations = variantResults.flatMap(
+    const engineResult = await this.opportunityEngineService.evaluateVariants({
+      itemVariantIds: itemVariants.map((itemVariant) => itemVariant.id),
+      includeRejected: true,
+      maxPairs: OPPORTUNITY_RESCAN_MAX_PAIRS,
+      allowHistoricalFallback: false,
+    });
+    const allEvaluations = engineResult.results.flatMap(
       (result) => result.evaluations,
+    );
+    const materializableEvaluations = allEvaluations.filter(
+      (evaluation) => evaluation.disposition !== 'rejected',
+    );
+    const rejectedEvaluations = allEvaluations.filter(
+      (evaluation) => evaluation.disposition === 'rejected',
     );
     const relevantSourceCodes = [
       ...new Set(
@@ -70,6 +94,18 @@ export class OpportunityRescanService {
     const expiredResult = await this.prismaService.opportunity.updateMany({
       where: {
         status: OpportunityStatus.OPEN,
+        OR: [
+          {
+            expiresAt: {
+              lte: generatedAt,
+            },
+          },
+          {
+            detectedAt: {
+              lt: new Date(generatedAt.getTime() - MATERIALIZED_OPPORTUNITY_TTL_MS),
+            },
+          },
+        ],
       },
       data: {
         status: OpportunityStatus.EXPIRED,
@@ -95,15 +131,174 @@ export class OpportunityRescanService {
 
     return {
       scannedVariantCount: itemVariants.length,
-      evaluatedPairCount: variantResults.reduce(
-        (total, result) => total + result.evaluatedPairCount,
-        0,
-      ),
+      evaluatedPairCount: engineResult.evaluatedPairCount,
       openOpportunityCount: materializableEvaluations.length,
       persistedOpportunityCount,
       expiredOpportunityCount: expiredResult.count,
       skippedMissingSnapshotCount,
+      variantFunnel: {
+        scanned: engineResult.results.length,
+        withFetchedRows: engineResult.results.filter(
+          (result) => result.diagnostics.fetched > 0,
+        ).length,
+        withNormalizedRows: engineResult.results.filter(
+          (result) => result.diagnostics.normalized > 0,
+        ).length,
+        withCanonicalMatchedRows: engineResult.results.filter(
+          (result) => result.diagnostics.canonicalMatched > 0,
+        ).length,
+        withEvaluatedPairs: engineResult.results.filter(
+          (result) => result.evaluatedPairCount > 0,
+        ).length,
+        withPairablePairs: engineResult.results.filter(
+          (result) => result.diagnostics.pairable > 0,
+        ).length,
+        withCandidatePairs: engineResult.results.filter(
+          (result) => result.diagnostics.candidate > 0,
+        ).length,
+        withEligiblePairs: engineResult.results.filter(
+          (result) => result.diagnostics.eligible > 0,
+        ).length,
+        withSurfacedPairs: engineResult.results.filter(
+          (result) => result.diagnostics.surfaced > 0,
+        ).length,
+      },
+      pairFunnel: {
+        evaluated: engineResult.evaluatedPairCount,
+        returned: allEvaluations.length,
+        rejected: rejectedEvaluations.length,
+        blocked: allEvaluations.filter(
+          (evaluation) => evaluation.pairability.status === 'blocked',
+        ).length,
+        listedExitOnly: allEvaluations.filter(
+          (evaluation) => evaluation.pairability.status === 'listed_exit_only',
+        ).length,
+        softListedExitOnly: allEvaluations.filter(
+          (evaluation) =>
+            evaluation.pairability.status === 'listed_exit_only' &&
+            evaluation.disposition !== 'rejected',
+        ).length,
+        pairable: allEvaluations.filter(
+          (evaluation) => evaluation.pairability.status === 'pairable',
+        ).length,
+        buySourceHasNoAsk: rejectedEvaluations.filter((evaluation) =>
+          evaluation.reasonCodes.includes('buy_source_has_no_ask'),
+        ).length,
+        sellSourceHasNoExitSignal: rejectedEvaluations.filter((evaluation) =>
+          evaluation.reasonCodes.includes('sell_source_has_no_exit_signal'),
+        ).length,
+        strictVariantKeyMissing: rejectedEvaluations.filter((evaluation) =>
+          evaluation.reasonCodes.includes('strict_variant_key_missing'),
+        ).length,
+        strictVariantKeyMismatch: rejectedEvaluations.filter((evaluation) =>
+          evaluation.reasonCodes.includes('strict_variant_key_mismatch'),
+        ).length,
+        preScoreRejected: rejectedEvaluations.filter(
+          (evaluation) =>
+            evaluation.reasonCodes.includes('pre_score_outlier_rejected') ||
+            evaluation.reasonCodes.includes('stale_pre_score_rejection'),
+        ).length,
+        antiFakeRejected: rejectedEvaluations.filter(
+          (evaluation) => evaluation.antiFakeAssessment.hardReject,
+        ).length,
+        nearEqualAfterFees: allEvaluations.filter((evaluation) =>
+          evaluation.reasonCodes.includes('near_equal_after_fees'),
+        ).length,
+        trueNonPositiveEdge: rejectedEvaluations.filter((evaluation) =>
+          evaluation.reasonCodes.includes('true_non_positive_edge'),
+        ).length,
+        negativeExpectedNet: rejectedEvaluations.filter((evaluation) =>
+          evaluation.reasonCodes.includes('negative_fees_adjusted_spread'),
+        ).length,
+        confidenceBelowCandidateFloor: rejectedEvaluations.filter(
+          (evaluation) =>
+            evaluation.reasonCodes.includes('confidence_below_candidate_floor'),
+        ).length,
+        otherRejected: rejectedEvaluations.filter(
+          (evaluation) =>
+            !evaluation.reasonCodes.includes('buy_source_has_no_ask') &&
+            !evaluation.reasonCodes.includes('sell_source_has_no_exit_signal') &&
+            !evaluation.reasonCodes.includes('strict_variant_key_missing') &&
+            !evaluation.reasonCodes.includes('strict_variant_key_mismatch') &&
+            !evaluation.reasonCodes.includes('pre_score_outlier_rejected') &&
+            !evaluation.reasonCodes.includes('stale_pre_score_rejection') &&
+            !evaluation.antiFakeAssessment.hardReject &&
+            !evaluation.reasonCodes.includes('negative_fees_adjusted_spread') &&
+            !evaluation.reasonCodes.includes(
+              'confidence_below_candidate_floor',
+            ),
+        ).length,
+        candidate: engineResult.dispositionSummary.candidate,
+        nearEligible: engineResult.dispositionSummary.near_eligible,
+        eligible: engineResult.dispositionSummary.eligible,
+        riskyHighUpside: engineResult.dispositionSummary.risky_high_upside,
+      },
+      topRejectReasons: this.collectTopRejectReasons(rejectedEvaluations),
+      topBlockerReasons: this.collectTopBlockerReasons(rejectedEvaluations),
     };
+  }
+
+  private collectTopRejectReasons(
+    rejectedEvaluations: readonly OpportunityEvaluationDto[],
+  ): readonly {
+    readonly reasonCode: OpportunityReasonCode;
+    readonly count: number;
+  }[] {
+    const counts = new Map<OpportunityReasonCode, number>();
+
+    for (const evaluation of rejectedEvaluations) {
+      for (const reasonCode of new Set(evaluation.reasonCodes)) {
+        counts.set(reasonCode, (counts.get(reasonCode) ?? 0) + 1);
+      }
+    }
+
+    return [...counts.entries()]
+      .map(([reasonCode, count]) => ({
+        reasonCode,
+        count,
+      }))
+      .sort((left, right) => {
+        if (right.count !== left.count) {
+          return right.count - left.count;
+        }
+
+        return left.reasonCode.localeCompare(right.reasonCode);
+      })
+      .slice(0, OPPORTUNITY_RESCAN_TOP_REASON_LIMIT);
+  }
+
+  private collectTopBlockerReasons(
+    rejectedEvaluations: readonly OpportunityEvaluationDto[],
+  ): readonly {
+    readonly blockerReason: OpportunityBlockerReason;
+    readonly count: number;
+  }[] {
+    const counts = new Map<OpportunityBlockerReason, number>();
+
+    for (const evaluation of rejectedEvaluations) {
+      if (!evaluation.eligibility.blockerReason) {
+        continue;
+      }
+
+      counts.set(
+        evaluation.eligibility.blockerReason,
+        (counts.get(evaluation.eligibility.blockerReason) ?? 0) + 1,
+      );
+    }
+
+    return [...counts.entries()]
+      .map(([blockerReason, count]) => ({
+        blockerReason,
+        count,
+      }))
+      .sort((left, right) => {
+        if (right.count !== left.count) {
+          return right.count - left.count;
+        }
+
+        return left.blockerReason.localeCompare(right.blockerReason);
+      })
+      .slice(0, OPPORTUNITY_RESCAN_TOP_REASON_LIMIT);
   }
 
   private async materializeEvaluation(
@@ -146,6 +341,7 @@ export class OpportunityRescanService {
         ),
         confidence: this.toDecimal(evaluation.finalConfidence),
         detectedAt,
+        expiresAt: new Date(detectedAt.getTime() + MATERIALIZED_OPPORTUNITY_TTL_MS),
         notes: this.buildOpportunityNotes(evaluation),
       },
       update: {
@@ -163,7 +359,7 @@ export class OpportunityRescanService {
         ),
         confidence: this.toDecimal(evaluation.finalConfidence),
         detectedAt,
-        expiresAt: null,
+        expiresAt: new Date(detectedAt.getTime() + MATERIALIZED_OPPORTUNITY_TTL_MS),
         notes: this.buildOpportunityNotes(evaluation),
       },
     });
@@ -174,10 +370,33 @@ export class OpportunityRescanService {
   private buildOpportunityNotes(
     evaluation: OpportunityEvaluationDto,
   ): Prisma.InputJsonValue {
-    return {
+    const notes = {
       sourcePairKey: evaluation.sourcePairKey,
+      canonicalDisplayName: evaluation.canonicalDisplayName,
+      variantDisplayName: evaluation.variantDisplayName,
       disposition: evaluation.disposition,
+      surfaceTier: evaluation.surfaceTier,
+      rawSpread: evaluation.rawSpread,
+      rawSpreadPercent: evaluation.rawSpreadPercent,
+      feesAdjustedSpread: evaluation.feesAdjustedSpread,
+      expectedExitPrice: evaluation.expectedExitPrice,
+      estimatedSellFeeRate: evaluation.estimatedSellFeeRate,
+      buyCost: evaluation.buyCost,
+      sellSignalPrice: evaluation.sellSignalPrice,
       reasonCodes: evaluation.reasonCodes,
+      riskReasons: evaluation.riskReasons.map((reason) => ({
+        code: reason.code,
+        severity: reason.severity,
+        detail: reason.detail,
+      })),
+      componentScores: evaluation.componentScores,
+      execution: evaluation.execution,
+      strictTradable: evaluation.strictTradable,
+      preScoreGate: evaluation.preScoreGate,
+      eligibility: evaluation.eligibility,
+      validation: evaluation.validation,
+      pairability: evaluation.pairability,
+      rankingInputs: evaluation.rankingInputs,
       penalties: {
         freshnessPenalty: evaluation.penalties.freshnessPenalty,
         liquidityPenalty: evaluation.penalties.liquidityPenalty,
@@ -201,23 +420,29 @@ export class OpportunityRescanService {
       buy: {
         source: evaluation.buy.source,
         sourceName: evaluation.buy.sourceName,
+        marketUrl: evaluation.buy.marketUrl,
+        listingUrl: evaluation.buy.listingUrl,
         observedAt: evaluation.buy.observedAt.toISOString(),
         fetchMode: evaluation.buy.fetchMode,
         confidence: evaluation.buy.confidence,
         ask: evaluation.buy.ask,
         bid: evaluation.buy.bid,
         listedQty: evaluation.buy.listedQty,
+        snapshotId: evaluation.buy.snapshotId,
         rawPayloadArchiveId: evaluation.buy.rawPayloadArchiveId,
       },
       sell: {
         source: evaluation.sell.source,
         sourceName: evaluation.sell.sourceName,
+        marketUrl: evaluation.sell.marketUrl,
+        listingUrl: evaluation.sell.listingUrl,
         observedAt: evaluation.sell.observedAt.toISOString(),
         fetchMode: evaluation.sell.fetchMode,
         confidence: evaluation.sell.confidence,
         ask: evaluation.sell.ask,
         bid: evaluation.sell.bid,
         listedQty: evaluation.sell.listedQty,
+        snapshotId: evaluation.sell.snapshotId,
         rawPayloadArchiveId: evaluation.sell.rawPayloadArchiveId,
       },
       ...(evaluation.backupConfirmation
@@ -225,6 +450,8 @@ export class OpportunityRescanService {
         : {}),
       materializedBy: 'admin-opportunities-rescan',
     };
+
+    return JSON.parse(JSON.stringify(notes)) as Prisma.InputJsonValue;
   }
 
   private mapRiskClass(
@@ -244,5 +471,23 @@ export class OpportunityRescanService {
 
   private toDecimal(value: number): Prisma.Decimal {
     return new Prisma.Decimal(value.toFixed(4));
+  }
+
+  private normalizeVariantLimit(value: number | undefined): number | undefined {
+    if (value === undefined) {
+      return undefined;
+    }
+
+    if (!Number.isFinite(value)) {
+      return undefined;
+    }
+
+    const normalized = Math.trunc(value);
+
+    if (normalized <= 0) {
+      return undefined;
+    }
+
+    return Math.min(normalized, MAX_BOUNDED_OPPORTUNITY_RESCAN_VARIANTS);
   }
 }
