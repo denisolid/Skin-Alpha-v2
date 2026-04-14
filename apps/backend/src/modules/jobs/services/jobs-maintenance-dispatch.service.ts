@@ -71,6 +71,7 @@ export class JobsMaintenanceDispatchService {
     readonly requestedAt: Date;
     readonly changedStateCount: number;
     readonly updatedHotItemCount: number;
+    readonly variantLimit?: number;
   }): Promise<{
     readonly jobRunId: string;
     readonly externalJobId: string;
@@ -83,6 +84,9 @@ export class JobsMaintenanceDispatchService {
       externalJobId,
       changedStateCount: input.changedStateCount,
       updatedHotItemCount: input.updatedHotItemCount,
+      ...(input.variantLimit !== undefined
+        ? { variantLimit: input.variantLimit }
+        : {}),
     } satisfies OpportunityRescanJobData);
     const jobRunId = await this.jobRunService.ensureQueuedJobRun({
       queueName: OPPORTUNITY_RESCAN_QUEUE_NAME,
@@ -103,6 +107,9 @@ export class JobsMaintenanceDispatchService {
         externalJobId,
         changedStateCount: input.changedStateCount,
         updatedHotItemCount: input.updatedHotItemCount,
+        ...(input.variantLimit !== undefined
+          ? { variantLimit: input.variantLimit }
+          : {}),
       } satisfies OpportunityRescanJobData,
     });
 

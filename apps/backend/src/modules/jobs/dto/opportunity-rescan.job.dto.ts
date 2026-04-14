@@ -4,4 +4,5 @@ export interface OpportunityRescanJobData {
   readonly externalJobId: string;
   readonly changedStateCount: number;
   readonly updatedHotItemCount: number;
+  readonly variantLimit?: number;
 }

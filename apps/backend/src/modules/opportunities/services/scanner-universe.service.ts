@@ -24,6 +24,12 @@ import { ScannerUniversePolicyService } from './scanner-universe-policy.service'
 const DEFAULT_UNIVERSE_LIMIT = 50;
 const MAX_SCORING_CANDIDATE_LIMIT = 400;
 
+export interface ScannerUniverseOverlapReadinessSummary {
+  readonly totalOverlapVariantCount: number;
+  readonly usableOverlapVariantCount: number;
+  readonly freshOverlapVariantCount: number;
+}
+
 @Injectable()
 export class ScannerUniverseService {
   constructor(
@@ -149,6 +155,42 @@ export class ScannerUniverseService {
         ),
       ]),
     );
+  }
+
+  async summarizeOverlapReadiness(
+    generatedAt: Date = new Date(),
+  ): Promise<ScannerUniverseOverlapReadinessSummary> {
+    const overlapCandidates =
+      await this.opportunitiesRepository.findOverlapScannerUniverseCandidates();
+    let totalOverlapVariantCount = 0;
+    let usableOverlapVariantCount = 0;
+    let freshOverlapVariantCount = 0;
+
+    for (const candidate of overlapCandidates) {
+      const evaluatedCandidate =
+        this.scannerUniversePolicyService.evaluateCandidate(
+          candidate,
+          generatedAt,
+        );
+
+      if (evaluatedCandidate.sourceMetrics.totalSourceCount >= 2) {
+        totalOverlapVariantCount += 1;
+      }
+
+      if (evaluatedCandidate.sourceMetrics.usableSourceCount >= 2) {
+        usableOverlapVariantCount += 1;
+      }
+
+      if (evaluatedCandidate.sourceMetrics.freshSourceCount >= 2) {
+        freshOverlapVariantCount += 1;
+      }
+    }
+
+    return {
+      totalOverlapVariantCount,
+      usableOverlapVariantCount,
+      freshOverlapVariantCount,
+    };
   }
 
   async setHotOverride(

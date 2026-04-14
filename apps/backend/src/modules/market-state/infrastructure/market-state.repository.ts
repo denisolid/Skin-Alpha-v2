@@ -3,6 +3,10 @@ import { Inject, Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../../../infrastructure/prisma/prisma.service';
 import type { SourceAdapterKey } from '../../source-adapters/domain/source-adapter.types';
+import {
+  chunkArray,
+  mapWithConcurrencyLimit,
+} from '../../shared/utils/async.util';
 import type {
   MarketReadRepository,
   MarketSnapshotRecord,
@@ -43,6 +47,9 @@ interface SnapshotHistoryRow {
   readonly rawPayloadArchiveId: string | null;
 }
 
+const MARKET_STATE_READ_CHUNK_SIZE = 5_000;
+const MARKET_STATE_READ_CONCURRENCY_LIMIT = 2;
+
 @Injectable()
 export class MarketStateRepositoryAdapter implements MarketReadRepository {
   constructor(
@@ -63,22 +70,29 @@ export class MarketStateRepositoryAdapter implements MarketReadRepository {
       return [];
     }
 
-    const itemVariants = await this.prismaService.itemVariant.findMany({
-      where: {
-        id: {
-          in: uniqueItemVariantIds,
-        },
-      },
-      include: {
-        canonicalItem: {
-          select: {
-            id: true,
-            displayName: true,
-            category: true,
-          },
-        },
-      },
-    });
+    const itemVariants = (
+      await mapWithConcurrencyLimit(
+        chunkArray(uniqueItemVariantIds, MARKET_STATE_READ_CHUNK_SIZE),
+        MARKET_STATE_READ_CONCURRENCY_LIMIT,
+        async (itemVariantIdChunk) =>
+          this.prismaService.itemVariant.findMany({
+            where: {
+              id: {
+                in: itemVariantIdChunk,
+              },
+            },
+            include: {
+              canonicalItem: {
+                select: {
+                  id: true,
+                  displayName: true,
+                  category: true,
+                },
+              },
+            },
+          }),
+      )
+    ).flat();
     const marketStatesByVariant =
       await this.findMarketStatesByVariantIds(
         itemVariants.map((itemVariant) => itemVariant.id),
@@ -166,55 +180,62 @@ export class MarketStateRepositoryAdapter implements MarketReadRepository {
       return new Map<string, readonly MarketSnapshotRecord[]>();
     }
 
-    const rows = await this.prismaService.$queryRaw<SnapshotHistoryRow[]>(
-      Prisma.sql`
-        SELECT ranked."itemVariantId",
-               ranked."snapshotId",
-               ranked."sourceId",
-               ranked."sourceCode",
-               ranked."sourceName",
-               ranked."sourceKind",
-               ranked."sourceMetadata",
-               ranked."currencyCode",
-               ranked."lowestAskGross",
-               ranked."highestBidGross",
-               ranked."listingCount",
-               ranked."observedAt",
-               ranked."confidence",
-               ranked."rawPayloadArchiveId"
-        FROM (
-          SELECT
-            snapshot."itemVariantId" AS "itemVariantId",
-            snapshot.id AS "snapshotId",
-            snapshot."sourceId" AS "sourceId",
-            source.code AS "sourceCode",
-            source.name AS "sourceName",
-            source.kind AS "sourceKind",
-            source.metadata AS "sourceMetadata",
-            snapshot."currencyCode" AS "currencyCode",
-            snapshot."lowestAskGross" AS "lowestAskGross",
-            snapshot."highestBidGross" AS "highestBidGross",
-            snapshot."listingCount" AS "listingCount",
-            snapshot."observedAt" AS "observedAt",
-            snapshot.confidence AS "confidence",
-            snapshot."rawPayloadArchiveId" AS "rawPayloadArchiveId",
-            ROW_NUMBER() OVER (
-              PARTITION BY snapshot."itemVariantId"
-              ORDER BY snapshot."observedAt" DESC, snapshot."createdAt" DESC
-            ) AS "rowNumber"
-          FROM "MarketSnapshot" AS snapshot
-          INNER JOIN "Source" AS source
-            ON source.id = snapshot."sourceId"
-          WHERE snapshot."itemVariantId" IN (${Prisma.join(
-            uniqueItemVariantIds.map(
-              (itemVariantId) => Prisma.sql`${itemVariantId}::uuid`,
-            ),
-          )})
-        ) AS ranked
-        WHERE ranked."rowNumber" <= ${limit}
-        ORDER BY ranked."itemVariantId" ASC, ranked."observedAt" DESC
-      `,
-    );
+    const rows = (
+      await mapWithConcurrencyLimit(
+        chunkArray(uniqueItemVariantIds, MARKET_STATE_READ_CHUNK_SIZE),
+        MARKET_STATE_READ_CONCURRENCY_LIMIT,
+        async (itemVariantIdChunk) =>
+          this.prismaService.$queryRaw<SnapshotHistoryRow[]>(
+            Prisma.sql`
+              SELECT ranked."itemVariantId",
+                     ranked."snapshotId",
+                     ranked."sourceId",
+                     ranked."sourceCode",
+                     ranked."sourceName",
+                     ranked."sourceKind",
+                     ranked."sourceMetadata",
+                     ranked."currencyCode",
+                     ranked."lowestAskGross",
+                     ranked."highestBidGross",
+                     ranked."listingCount",
+                     ranked."observedAt",
+                     ranked."confidence",
+                     ranked."rawPayloadArchiveId"
+              FROM (
+                SELECT
+                  snapshot."itemVariantId" AS "itemVariantId",
+                  snapshot.id AS "snapshotId",
+                  snapshot."sourceId" AS "sourceId",
+                  source.code AS "sourceCode",
+                  source.name AS "sourceName",
+                  source.kind AS "sourceKind",
+                  source.metadata AS "sourceMetadata",
+                  snapshot."currencyCode" AS "currencyCode",
+                  snapshot."lowestAskGross" AS "lowestAskGross",
+                  snapshot."highestBidGross" AS "highestBidGross",
+                  snapshot."listingCount" AS "listingCount",
+                  snapshot."observedAt" AS "observedAt",
+                  snapshot.confidence AS "confidence",
+                  snapshot."rawPayloadArchiveId" AS "rawPayloadArchiveId",
+                  ROW_NUMBER() OVER (
+                    PARTITION BY snapshot."itemVariantId"
+                    ORDER BY snapshot."observedAt" DESC, snapshot."createdAt" DESC
+                  ) AS "rowNumber"
+                FROM "MarketSnapshot" AS snapshot
+                INNER JOIN "Source" AS source
+                  ON source.id = snapshot."sourceId"
+                WHERE snapshot."itemVariantId" IN (${Prisma.join(
+                  itemVariantIdChunk.map(
+                    (itemVariantId) => Prisma.sql`${itemVariantId}::uuid`,
+                  ),
+                )})
+              ) AS ranked
+              WHERE ranked."rowNumber" <= ${limit}
+              ORDER BY ranked."itemVariantId" ASC, ranked."observedAt" DESC
+            `,
+          ),
+      )
+    ).flat();
     const snapshotHistories = new Map<string, MarketSnapshotRecord[]>();
 
     for (const itemVariantId of uniqueItemVariantIds) {
@@ -257,25 +278,32 @@ export class MarketStateRepositoryAdapter implements MarketReadRepository {
       return new Map();
     }
 
-    const marketStates = await this.prismaService.marketState.findMany({
-      where: {
-        itemVariantId: {
-          in: uniqueItemVariantIds,
-        },
-      },
-      include: {
-        source: true,
-        latestSnapshot: true,
-      },
-      orderBy: [
-        {
-          itemVariantId: 'asc',
-        },
-        {
-          observedAt: 'desc',
-        },
-      ],
-    });
+    const marketStates = (
+      await mapWithConcurrencyLimit(
+        chunkArray(uniqueItemVariantIds, MARKET_STATE_READ_CHUNK_SIZE),
+        MARKET_STATE_READ_CONCURRENCY_LIMIT,
+        async (itemVariantIdChunk) =>
+          this.prismaService.marketState.findMany({
+            where: {
+              itemVariantId: {
+                in: itemVariantIdChunk,
+              },
+            },
+            include: {
+              source: true,
+              latestSnapshot: true,
+            },
+            orderBy: [
+              {
+                itemVariantId: 'asc',
+              },
+              {
+                observedAt: 'desc',
+              },
+            ],
+          }),
+      )
+    ).flat();
     const marketStatesByVariant = new Map<string, MarketStateRecord[]>();
 
     for (const itemVariantId of uniqueItemVariantIds) {
@@ -388,39 +416,46 @@ export class MarketStateRepositoryAdapter implements MarketReadRepository {
       >();
     }
 
-    const listings = await this.prismaService.sourceListing.findMany({
-      where: {
-        itemVariantId: {
-          in: [...new Set(itemVariantIds)],
-        },
-        listingStatus: ListingStatus.ACTIVE,
-      },
-      select: {
-        id: true,
-        itemVariantId: true,
-        sourceId: true,
-        externalListingId: true,
-        title: true,
-        listingUrl: true,
-        attributes: true,
-        priceGross: true,
-        lastSeenAt: true,
-      },
-      orderBy: [
-        {
-          itemVariantId: 'asc',
-        },
-        {
-          sourceId: 'asc',
-        },
-        {
-          priceGross: 'asc',
-        },
-        {
-          lastSeenAt: 'desc',
-        },
-      ],
-    });
+    const listings = (
+      await mapWithConcurrencyLimit(
+        chunkArray([...new Set(itemVariantIds)], MARKET_STATE_READ_CHUNK_SIZE),
+        MARKET_STATE_READ_CONCURRENCY_LIMIT,
+        async (itemVariantIdChunk) =>
+          this.prismaService.sourceListing.findMany({
+            where: {
+              itemVariantId: {
+                in: itemVariantIdChunk,
+              },
+              listingStatus: ListingStatus.ACTIVE,
+            },
+            select: {
+              id: true,
+              itemVariantId: true,
+              sourceId: true,
+              externalListingId: true,
+              title: true,
+              listingUrl: true,
+              attributes: true,
+              priceGross: true,
+              lastSeenAt: true,
+            },
+            orderBy: [
+              {
+                itemVariantId: 'asc',
+              },
+              {
+                sourceId: 'asc',
+              },
+              {
+                priceGross: 'asc',
+              },
+              {
+                lastSeenAt: 'desc',
+              },
+            ],
+          }),
+      )
+    ).flat();
     const representativeListingsByVariant = new Map<
       string,
       Map<

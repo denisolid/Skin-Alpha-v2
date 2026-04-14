@@ -50,7 +50,10 @@ import { parseOpportunityKey } from '../domain/opportunity-key';
 import type { OpportunityEvaluationDto } from '../dto/opportunity-engine.dto';
 import type { CompiledScheme } from '../../schemes/domain/scheme.model';
 import { OpportunityEngineService } from './opportunity-engine.service';
-import { ScannerUniverseService } from './scanner-universe.service';
+import {
+  ScannerUniverseService,
+  type ScannerUniverseOverlapReadinessSummary,
+} from './scanner-universe.service';
 
 const DEFAULT_FEED_PAGE = 1;
 const DEFAULT_FEED_PAGE_SIZE = 25;
@@ -308,11 +311,17 @@ export class OpportunityFeedService {
           ? { minConfidence: normalizedQuery.minConfidence }
           : {}),
       });
-    const [scannerUniverseMap, latestRescan] = await Promise.all([
+    const shouldInspectCurrentOverlap =
+      materializedOpportunities.length === 0;
+    const [scannerUniverseMap, latestRescan, overlapReadinessSummary] =
+      await Promise.all([
       this.scannerUniverseService.getScannerUniverseMap(
         materializedOpportunities.map((opportunity) => opportunity.itemVariantId),
       ),
       this.opportunitiesRepository.findLatestOpportunityRescan(),
+      shouldInspectCurrentOverlap
+        ? this.scannerUniverseService.summarizeOverlapReadiness(now)
+        : Promise.resolve(null),
     ]);
     const allFeedRecords = materializedOpportunities.flatMap((opportunity) => {
       const evaluation = this.toMaterializedEvaluation(opportunity);
@@ -396,6 +405,7 @@ export class OpportunityFeedService {
       summary: this.createSummary(sortedRecords),
       diagnostics: this.buildMaterializedDiagnostics({
         latestRescan,
+        overlapReadinessSummary,
         materializedRowCount: materializedOpportunities.length,
         feedRecords: allFeedRecords,
         filteredRecords: sortedRecords,
@@ -1051,6 +1061,9 @@ export class OpportunityFeedService {
     readonly zeroOverlapCount: number;
     readonly prePairabilityEliminatedCount: number;
     readonly materializationNotRunCount: number;
+    readonly overlapExistsButMaterializationNotRunCount: number;
+    readonly overlapExistsAllCandidatesStaleCount: number;
+    readonly materializedRowsAbsentCount: number;
     readonly materializedRowsFilteredOutCount: number;
     readonly softListedExitOnlyCount: number;
     readonly nearEqualAfterFeesCount: number;
@@ -1066,6 +1079,18 @@ export class OpportunityFeedService {
       {
         key: 'materialization_not_run',
         count: input.materializationNotRunCount,
+      },
+      {
+        key: 'overlap_exists_materialization_not_run',
+        count: input.overlapExistsButMaterializationNotRunCount,
+      },
+      {
+        key: 'overlap_exists_all_candidates_stale',
+        count: input.overlapExistsAllCandidatesStaleCount,
+      },
+      {
+        key: 'materialized_rows_absent',
+        count: input.materializedRowsAbsentCount,
       },
       {
         key: 'materialized_rows_filtered_out',
@@ -1231,6 +1256,9 @@ export class OpportunityFeedService {
         ),
         prePairabilityEliminatedCount: blockedBeforePairabilityCount,
         materializationNotRunCount: 0,
+        overlapExistsButMaterializationNotRunCount: 0,
+        overlapExistsAllCandidatesStaleCount: 0,
+        materializedRowsAbsentCount: 0,
         materializedRowsFilteredOutCount: 0,
         softListedExitOnlyCount,
         nearEqualAfterFeesCount,
@@ -1251,6 +1279,7 @@ export class OpportunityFeedService {
 
   private buildMaterializedDiagnostics(input: {
     readonly latestRescan: LatestOpportunityRescanRecord | null;
+    readonly overlapReadinessSummary: ScannerUniverseOverlapReadinessSummary | null;
     readonly materializedRowCount: number;
     readonly feedRecords: readonly OpportunityFeedRecord[];
     readonly filteredRecords: readonly OpportunityFeedRecord[];
@@ -1326,6 +1355,25 @@ export class OpportunityFeedService {
       ).length;
     const trueNonPositiveEdgeCount =
       latestRescan?.pairFunnel.trueNonPositiveEdge ?? 0;
+    const overlapExistsButMaterializationNotRunCount =
+      !latestRescan &&
+      input.materializedRowCount === 0 &&
+      (input.overlapReadinessSummary?.totalOverlapVariantCount ?? 0) > 0
+        ? 1
+        : 0;
+    const overlapExistsAllCandidatesStaleCount =
+      input.materializedRowCount === 0 &&
+      (input.overlapReadinessSummary?.totalOverlapVariantCount ?? 0) > 0 &&
+      (input.overlapReadinessSummary?.usableOverlapVariantCount ?? 0) === 0
+        ? 1
+        : 0;
+    const materializedRowsAbsentCount =
+      input.materializedRowCount === 0 &&
+      latestRescan !== undefined &&
+      latestRescan !== null &&
+      latestRescan.persistedOpportunityCount === 0
+        ? 1
+        : 0;
 
     return {
       scannedVariantCount,
@@ -1385,6 +1433,9 @@ export class OpportunityFeedService {
           strictVariantIdentityRejectCount,
         materializationNotRunCount:
           latestRescan || input.materializedRowCount > 0 ? 0 : 1,
+        overlapExistsButMaterializationNotRunCount,
+        overlapExistsAllCandidatesStaleCount,
+        materializedRowsAbsentCount,
         materializedRowsFilteredOutCount,
         softListedExitOnlyCount,
         nearEqualAfterFeesCount,
@@ -2682,6 +2733,7 @@ export class OpportunityFeedService {
   private readLatestRescanMetrics(value: unknown):
     | {
         readonly scannedVariantCount: number;
+        readonly persistedOpportunityCount: number;
         readonly variantFunnel: {
           readonly withEvaluatedPairs: number;
           readonly withPairablePairs: number;
@@ -2717,6 +2769,8 @@ export class OpportunityFeedService {
 
     return {
       scannedVariantCount,
+      persistedOpportunityCount:
+        this.readNumber(record.persistedOpportunityCount) ?? 0,
       variantFunnel: {
         withEvaluatedPairs: this.readNumber(variantFunnel.withEvaluatedPairs) ?? 0,
         withPairablePairs: this.readNumber(variantFunnel.withPairablePairs) ?? 0,

@@ -43,12 +43,19 @@ export class OpportunityRescanProcessor extends WorkerHost {
     });
 
     try {
-      const result = await this.opportunityRescanService.rescanAndPersist();
+      const result = await this.opportunityRescanService.rescanAndPersist({
+        ...(job.data.variantLimit !== undefined
+          ? { variantLimit: job.data.variantLimit }
+          : {}),
+      });
       const serializedResult = this.serializeJson({
         ...result,
         requestedAt: job.data.requestedAt,
         changedStateCount: job.data.changedStateCount,
         updatedHotItemCount: job.data.updatedHotItemCount,
+        ...(job.data.variantLimit !== undefined
+          ? { variantLimit: job.data.variantLimit }
+          : {}),
       });
 
       await this.jobRunService.completeJobRun({

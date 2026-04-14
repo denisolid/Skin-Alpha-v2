@@ -96,6 +96,9 @@ export interface OpportunitiesRepository {
   findScannerUniverseCandidates(
     input: FindScannerUniverseCandidatesInput,
   ): Promise<readonly ScannerUniverseCandidateRecord[]>;
+  findOverlapScannerUniverseCandidates(): Promise<
+    readonly ScannerUniverseCandidateRecord[]
+  >;
   findScannerUniverseVariant(
     itemVariantId: string,
   ): Promise<ScannerUniverseCandidateRecord | null>;

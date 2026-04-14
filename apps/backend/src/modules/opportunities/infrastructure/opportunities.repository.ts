@@ -105,6 +105,28 @@ export class OpportunitiesRepositoryAdapter implements OpportunitiesRepository {
     }));
   }
 
+  async findOverlapScannerUniverseCandidates(): Promise<
+    readonly ScannerUniverseCandidateRecord[]
+  > {
+    const overlapRows = await this.prismaService.$queryRaw<
+      readonly { readonly itemVariantId: string }[]
+    >(Prisma.sql`
+      SELECT ms."itemVariantId"
+      FROM "MarketState" AS ms
+      GROUP BY ms."itemVariantId"
+      HAVING COUNT(*) >= 2
+    `);
+
+    if (overlapRows.length === 0) {
+      return [];
+    }
+
+    return this.findScannerUniverseCandidates({
+      limit: overlapRows.length,
+      itemVariantIds: overlapRows.map((row) => row.itemVariantId),
+    });
+  }
+
   async findScannerUniverseVariant(
     itemVariantId: string,
   ): Promise<ScannerUniverseCandidateRecord | null> {

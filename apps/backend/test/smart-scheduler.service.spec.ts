@@ -301,4 +301,115 @@ describe('SmartSchedulerService', () => {
       sourceSyncDispatchService.dispatchScheduledSync,
     ).not.toHaveBeenCalled();
   });
+
+  it('enqueues a bounded bootstrap rescan when no successful baseline exists and changed states are overwhelming', async () => {
+    const logger = {
+      log: jest.fn(),
+      debug: jest.fn(),
+      warn: jest.fn(),
+      error: jest.fn(),
+    };
+    const prismaService = {
+      marketState: {
+        count: jest.fn().mockResolvedValue(25_000),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+    };
+    const adapters: SourceAdapter[] = [
+      createAdapter({ key: 'csfloat', enabled: false }),
+      createAdapter({ key: 'steam-snapshot', enabled: false }),
+      createAdapter({ key: 'skinport', enabled: false }),
+      createAdapter({ key: 'bitskins', enabled: false }),
+      createAdapter({ key: 'backup-aggregator', enabled: false }),
+    ];
+    const sourceOperationsService = {
+      hasActiveSyncJob: jest.fn().mockResolvedValue(false),
+    };
+    const sourceScheduler = {
+      decide: jest.fn().mockResolvedValue({
+        shouldRun: true,
+      }),
+    };
+    const sourceSyncDispatchService = {
+      dispatchScheduledSync: jest.fn(),
+    };
+    const sourceHealthRecoveryService = {
+      assessAndApply: jest.fn().mockResolvedValue({
+        source: 'csfloat',
+        mode: 'active',
+        checkedAt: new Date(),
+      }),
+    };
+    const sourceAntiBanSchedulerService = {
+      resolveInterval: jest.fn(({ baseIntervalMs }: { baseIntervalMs: number }) =>
+        baseIntervalMs,
+      ),
+    };
+    const jobRunService = {
+      hasActiveJob: jest.fn().mockResolvedValue(false),
+      getLatestSuccessfulJob: jest.fn().mockResolvedValue(null),
+    };
+    const jobsMaintenanceDispatchService = {
+      enqueueMarketStateRebuild: jest.fn(),
+      enqueueOpportunityRescan: jest.fn().mockResolvedValue({
+        jobRunId: 'bootstrap-rescan-job-run',
+        externalJobId: 'scheduled:opportunity-rescan:bootstrap',
+      }),
+    };
+    const schedulerLockService = {
+      acquire: jest.fn().mockResolvedValue(true),
+    };
+    const readPathDegradationService = {
+      inspect: jest.fn().mockResolvedValue({
+        held: false,
+      }),
+      trip: jest.fn().mockResolvedValue(undefined),
+    };
+    const scannerUniverseService = {
+      getScannerUniverse: jest.fn().mockResolvedValue({
+        generatedAt: new Date(),
+        summary: {
+          hot: 0,
+          warm: 0,
+          cold: 0,
+          overridden: 0,
+        },
+        items: [],
+      }),
+    };
+    const config = {
+      ...baseConfig,
+      schedulerOpportunityRescanEnabled: true,
+    };
+
+    const service = new SmartSchedulerService(
+      logger as never,
+      config as never,
+      prismaService as never,
+      adapters,
+      sourceScheduler as never,
+      sourceOperationsService as never,
+      sourceHealthRecoveryService as never,
+      sourceAntiBanSchedulerService as never,
+      sourceSyncDispatchService as never,
+      jobRunService as never,
+      jobsMaintenanceDispatchService as never,
+      schedulerLockService as never,
+      readPathDegradationService as never,
+      scannerUniverseService as never,
+    );
+
+    await service.runTick();
+
+    expect(
+      jobsMaintenanceDispatchService.enqueueOpportunityRescan,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        changedStateCount: 25_000,
+        updatedHotItemCount: 0,
+        variantLimit: 1_000,
+      }),
+    );
+    expect(readPathDegradationService.trip).not.toHaveBeenCalled();
+  });
 });

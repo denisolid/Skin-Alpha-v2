@@ -33,6 +33,7 @@ const SOURCE_SCHEDULE_LOCK_TTL_MS = 90_000;
 const MAINTENANCE_SCHEDULE_LOCK_TTL_MS = 5 * 60 * 1000;
 const HOT_UNIVERSE_RESCAN_LIMIT = 80;
 const OPPORTUNITY_RESCAN_EMERGENCY_CHANGED_STATES_THRESHOLD = 20_000;
+const OPPORTUNITY_RESCAN_BOOTSTRAP_VARIANT_LIMIT = 1_000;
 
 @Injectable()
 export class SmartSchedulerService {
@@ -353,10 +354,15 @@ export class SmartSchedulerService {
     const updatedHotItemCount = await this.countUpdatedHotTierItemsSince(
       lastSuccessfulJob?.finishedAt,
     );
+    const shouldRunBootstrapRescan =
+      !lastSuccessfulJob &&
+      changedStateCount >=
+        OPPORTUNITY_RESCAN_EMERGENCY_CHANGED_STATES_THRESHOLD;
 
     if (
       changedStateCount >=
-      OPPORTUNITY_RESCAN_EMERGENCY_CHANGED_STATES_THRESHOLD
+        OPPORTUNITY_RESCAN_EMERGENCY_CHANGED_STATES_THRESHOLD &&
+      !shouldRunBootstrapRescan
     ) {
       await this.readPathDegradationService.trip({
         reason: 'opportunity_rescan_overwhelming_delta',
@@ -370,6 +376,13 @@ export class SmartSchedulerService {
         SmartSchedulerService.name,
       );
       return;
+    }
+
+    if (shouldRunBootstrapRescan) {
+      this.logger.warn(
+        `Scheduler enqueuing bounded bootstrap opportunity rescan with variant_limit=${OPPORTUNITY_RESCAN_BOOTSTRAP_VARIANT_LIMIT} because no successful baseline exists and changed_states=${changedStateCount} exceeds the emergency threshold.`,
+        SmartSchedulerService.name,
+      );
     }
 
     if (
@@ -403,10 +416,13 @@ export class SmartSchedulerService {
         requestedAt: now,
         changedStateCount,
         updatedHotItemCount,
+        ...(shouldRunBootstrapRescan
+          ? { variantLimit: OPPORTUNITY_RESCAN_BOOTSTRAP_VARIANT_LIMIT }
+          : {}),
       });
 
     this.logger.log(
-      `Scheduler enqueued opportunity rescan (${result.externalJobId}) with changed_states=${changedStateCount} and hot_updates=${updatedHotItemCount}.`,
+      `Scheduler enqueued opportunity rescan (${result.externalJobId}) with changed_states=${changedStateCount} and hot_updates=${updatedHotItemCount}${shouldRunBootstrapRescan ? ` and variant_limit=${OPPORTUNITY_RESCAN_BOOTSTRAP_VARIANT_LIMIT}` : ''}.`,
       SmartSchedulerService.name,
     );
   }

@@ -33,7 +33,13 @@ describe('ScannerUniverseService', () => {
     ] as const;
     const repository: OpportunitiesRepository = {
       findScannerUniverseCandidates: jest.fn().mockResolvedValue(candidates),
+      findOverlapScannerUniverseCandidates: jest
+        .fn()
+        .mockResolvedValue(candidates),
       findScannerUniverseVariant: jest.fn().mockResolvedValue(candidates[0]),
+      listMaterializedOpportunities: jest.fn().mockResolvedValue([]),
+      findLatestMaterializedOpportunity: jest.fn().mockResolvedValue(null),
+      findLatestOpportunityRescan: jest.fn().mockResolvedValue(null),
     };
     const adminOverrideService = {
       listHotOverrides: jest.fn().mockResolvedValue(new Map()),
